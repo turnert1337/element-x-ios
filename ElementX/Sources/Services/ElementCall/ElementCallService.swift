@@ -298,8 +298,8 @@ class ElementCallService: NSObject, ElementCallServiceProtocol, PKPushRegistryDe
         
         guard nativeCallStack == nil else { return }
         
-        guard let transport = clientProxy.makeNativeCallTransport() else {
-            MXLog.error("Cannot start the native call stack without a transport")
+        guard let backend = clientProxy.makeNativeCallBackend() else {
+            MXLog.error("Cannot start the native call stack without a Matrix backend")
             return
         }
         
@@ -315,7 +315,7 @@ class ElementCallService: NSObject, ElementCallServiceProtocol, PKPushRegistryDe
         // surface. Screen sharing stays off until the broadcast extension that makes it work lands.
         let options = ElementCallOptions(isDeveloperModeEnabled: appSettings.developerOptionsEnabled)
         
-        let stack = NativeCallStack(transport: transport,
+        let stack = NativeCallStack(backend: backend,
                                     system: NativeCallSystem(service: self),
                                     options: options,
                                     style: style)
@@ -327,6 +327,18 @@ class ElementCallService: NSObject, ElementCallServiceProtocol, PKPushRegistryDe
             }
         
         Task { await stack.start() }
+    }
+    
+    /// Must run before a CallKit action is fulfilled: the system activates the session with whatever
+    /// category it has then, and an answered call reaches the controller only after that.
+    private func configureNativeCallAudioSession() {
+        guard appSettings.nativeCallEnabled else { return }
+        
+        do {
+            try CallAudioSessionConfigurator.configure()
+        } catch {
+            MXLog.error("Failed configuring the call audio session with error: \(error)")
+        }
     }
     
     private func stopNativeCallStack() {
@@ -463,8 +475,8 @@ class ElementCallService: NSObject, ElementCallServiceProtocol, PKPushRegistryDe
     }
     
     func provider(_ provider: CXProvider, perform action: CXStartCallAction) {
-        // The native controller configured the audio session already; CallKit activates it and
-        // reports back through `didActivate`.
+        // CallKit activates the session and reports back through `didActivate`.
+        configureNativeCallAudioSession()
         action.fulfill()
         callProvider.reportOutgoingCall(with: action.callUUID, startedConnectingAt: nil)
     }
@@ -495,6 +507,7 @@ class ElementCallService: NSObject, ElementCallServiceProtocol, PKPushRegistryDe
         // https://stackoverflow.com/questions/71483732/webrtc-running-from-wkwebview-avaudiosession-development-roadblock
         
         // First fullfill the action
+        configureNativeCallAudioSession()
         action.fulfill()
         
         if appSettings.nativeCallEnabled {
