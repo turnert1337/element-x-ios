@@ -8,6 +8,8 @@
 
 @testable import ElementX
 import Foundation
+import ImageIO
+import MatrixRustSDK
 import Testing
 
 @MainActor
@@ -290,6 +292,125 @@ final class MediaUploadPreviewScreenViewModelTests {
         #expect(timelineProxy.sendImageUrlThumbnailURLImageInfoCaptionRequestHandleCallsCount == 1)
     }
     
+    @Test
+    func drawingIsSavedOverTheCapturedPictureWhileTheScreenIsBlocked() async throws {
+        // Given two pictures that can be drawn on.
+        let urls = try [copyResourceToTemporaryDirectory("test_image.png"), copyResourceToTemporaryDirectory("test_image.png")]
+        let untouchedData = try Data(contentsOf: urls[0])
+        setUpViewModel(urls: urls, expectedCaption: nil, imageDrawingEnabled: true)
+        #expect(context.viewState.drawableMediaIndices == [0, 1])
+        
+        // When a red drawing on the second picture is saved, and Send is tapped meanwhile.
+        context.send(viewAction: .drewOnMedia(drawing: redDrawing, index: 1))
+        #expect(context.viewState.shouldDisableInteraction)
+        let saved = deferFulfillment(context.observe(\.viewState.shouldDisableInteraction)) { !$0 }
+        context.send(viewAction: .send)
+        try await saved.fulfill()
+        
+        // Then the screen stayed blocked until the save finished, and only the second picture changed.
+        #expect(context.viewState.mediaEditVersion == 1)
+        #expect(try Data(contentsOf: urls[0]) == untouchedData)
+        let source = try #require(CGImageSourceCreateWithURL(urls[1] as NSURL, nil))
+        let centre = try #require(CGImageSourceCreateImageAtIndex(source, 0, nil)).pixel(atX: 120, y: 120)
+        #expect(centre.red > 200 && centre.green < 60 && centre.blue < 60)
+        
+        // And sending works again, using the re-processed (drawn) second picture.
+        try await send()
+        let sentItems = try #require(timelineProxy.sendGalleryItemInfosCaptionInReplyToEventIDReceivedArguments?.itemInfos)
+        guard case let .image(_, .file(sentFilename), _, _, _, _) = sentItems[1] else {
+            Issue.record("Expected the second gallery item to be an image file.")
+            return
+        }
+        let sentSource = try #require(CGImageSourceCreateWithURL(URL(filePath: sentFilename) as NSURL, nil))
+        let sentCentre = try #require(CGImageSourceCreateImageAtIndex(sentSource, 0, nil)).pixel(atX: 120, y: 120)
+        #expect(sentCentre.red > 200 && sentCentre.green < 60 && sentCentre.blue < 60)
+    }
+    
+    @Test
+    func drawingTwiceWhileSavingOnlySavesOnce() async throws {
+        // Given a picture that can be drawn on.
+        let url = try copyResourceToTemporaryDirectory("test_image.png")
+        setUpViewModel(urls: [url], expectedCaption: nil, imageDrawingEnabled: true)
+        
+        // When Done is double tapped, sending the drawing twice.
+        let savedTwice = deferFailure(context.observe(\.viewState.mediaEditVersion), timeout: .seconds(2)) { $0 == 2 }
+        context.send(viewAction: .drewOnMedia(drawing: redDrawing, index: 0))
+        context.send(viewAction: .drewOnMedia(drawing: redDrawing, index: 0))
+        
+        // Then the picture is only saved once.
+        try await savedTwice.fulfill()
+        #expect(context.viewState.mediaEditVersion == 1)
+    }
+    
+    @Test
+    func stoppingDuringADrawingSaveDoesNotRestartProcessing() async throws {
+        // Given a picture that can be drawn on, whose processing has started once.
+        let url = try copyResourceToTemporaryDirectory("test_image.png")
+        let (startsStream, startsContinuation) = AsyncStream<Int>.makeStream()
+        var processingStarts = 0
+        setUpViewModel(urls: [url], expectedCaption: nil, imageDrawingEnabled: true) {
+            processingStarts += 1
+            startsContinuation.yield(processingStarts)
+            return .success(100 * 1024 * 1024)
+        }
+        
+        // When the screen is dismissed while the drawing is being saved.
+        let restarted = deferFailure(startsStream, timeout: .seconds(1), message: "Processing should not restart for a dismissed screen.") { $0 == 2 }
+        context.send(viewAction: .drewOnMedia(drawing: redDrawing, index: 0))
+        viewModel.stopProcessing() // Called by the coordinator when the screen is dismissed.
+        let saved = deferFulfillment(context.observe(\.viewState.shouldDisableInteraction)) { !$0 }
+        try await saved.fulfill()
+        
+        // Then the processing of the picture is not started again.
+        try await restarted.fulfill()
+    }
+    
+    @Test
+    func drawingIsSavedWhileTheCancelledProcessingIsStuckOnTheNetwork() async throws {
+        // Given a picture whose processing is stuck fetching the upload size limit.
+        let url = try copyResourceToTemporaryDirectory("test_image.png")
+        let (startedStream, startedContinuation) = AsyncStream<Void>.makeStream()
+        let (resumeStream, resumeContinuation) = AsyncStream<Void>.makeStream()
+        defer { resumeContinuation.finish() }
+        
+        var fetches = 0
+        let preparationStarted = deferFulfillment(startedStream) { _ in true }
+        setUpViewModel(urls: [url], expectedCaption: nil, imageDrawingEnabled: true) {
+            fetches += 1
+            if fetches == 1 {
+                startedContinuation.yield()
+                // An unstructured task ignores the cancellation, like the SDK call. Only returns once the test ends.
+                await Task { for await _ in resumeStream { } }.value
+            }
+            return .success(100 * 1024 * 1024)
+        }
+        try await preparationStarted.fulfill()
+        
+        // When a drawing is saved.
+        context.send(viewAction: .drewOnMedia(drawing: redDrawing, index: 0))
+        let saved = deferFulfillment(context.observe(\.viewState.shouldDisableInteraction)) { !$0 }
+        try await saved.fulfill()
+        
+        // Then the save didn't wait for the stuck processing.
+        #expect(context.viewState.mediaEditVersion == 1)
+    }
+    
+    @Test
+    func failedDrawingSaveShowsAnError() async throws {
+        // Given a picture that can no longer be read.
+        setUpViewModel(urls: [badImageURL], expectedCaption: nil, imageDrawingEnabled: true)
+        
+        // When a drawing is saved on it.
+        context.send(viewAction: .drewOnMedia(drawing: redDrawing, index: 0))
+        let finished = deferFulfillment(context.observe(\.viewState.shouldDisableInteraction)) { !$0 }
+        try await finished.fulfill()
+        
+        // Then the picture isn't marked as edited, and an error toast follows the loading indicator.
+        #expect(context.viewState.mediaEditVersion == 0)
+        #expect(userIndicatorController.submitIndicatorDelayCallsCount == 2)
+        #expect(userIndicatorController.submitIndicatorDelayReceivedArguments?.indicator.title == L10n.errorUnknown)
+    }
+    
     // MARK: - Helpers
     
     private var audioURL: URL {
@@ -310,6 +431,14 @@ final class MediaUploadPreviewScreenViewModelTests {
     
     private var badImageURL = URL(filePath: "/home/user/this_file_doesn't_exist.jpg")
     
+    /// A drawing that paints the whole picture red.
+    private var redDrawing: ImageDrawing {
+        ImageDrawing { context, frame in
+            context.setFillColor(CGColor(srgbRed: 1, green: 0, blue: 0, alpha: 1))
+            context.fill(frame)
+        }
+    }
+    
     private func assertResourceURL(filename: String) -> URL {
         guard let url = Bundle(for: Self.self).url(forResource: filename, withExtension: nil) else {
             Issue.record("Failed retrieving test asset")
@@ -318,11 +447,22 @@ final class MediaUploadPreviewScreenViewModelTests {
         return url
     }
     
+    /// Copies a test asset to a uniquely named file, so the test can overwrite it.
+    private func copyResourceToTemporaryDirectory(_ resource: String) throws -> URL {
+        let assetURL = assertResourceURL(filename: resource)
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("\(Self.self)-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let url = directory.appendingPathComponent("\(UUID().uuidString).\(assetURL.pathExtension)")
+        try FileManager.default.copyItem(at: assetURL, to: url)
+        return url
+    }
+    
     private func setUpViewModel(urls: [URL],
                                 expectedCaption: String?,
                                 maxUploadSizeResult: Result<UInt, ClientProxyError>? = nil,
                                 simulateGallerySendFailure: Bool = false,
                                 galleryEnabled: Bool = true,
+                                imageDrawingEnabled: Bool = false,
                                 maxUploadSizeClosure: (() async -> Result<UInt, ClientProxyError>)? = nil) {
         timelineProxy = TimelineProxyMock(.init())
         timelineProxy.sendAudioUrlAudioInfoCaptionRequestHandleClosure = { [weak self] _, _, caption, _ in
@@ -353,6 +493,7 @@ final class MediaUploadPreviewScreenViewModelTests {
                                                       title: "Some File",
                                                       shouldShowCaptionWarning: true,
                                                       galleryEnabled: galleryEnabled,
+                                                      imageDrawingEnabled: imageDrawingEnabled,
                                                       mediaUploadingPreprocessor: MediaUploadingPreprocessor(userSettings: userSettings),
                                                       timelineController: TimelineControllerMock(.init(timelineProxy: timelineProxy)),
                                                       clientProxy: clientProxy,

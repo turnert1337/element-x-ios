@@ -20,6 +20,7 @@ class MediaUploadPreviewScreenViewModel: MediaUploadPreviewScreenViewModelType, 
     private var mediaURLs: [URL]
     
     private var processingTask: Task<Result<[MediaInfo], MediaUploadingPreprocessorError>, Never>
+    private var drawingSaveTask: Task<Void, Never>?
     private var requestHandle: SendAttachmentJoinHandleProtocol?
     private let clientProxy: ClientProxyProtocol
     private let galleryEnabled: Bool
@@ -35,6 +36,7 @@ class MediaUploadPreviewScreenViewModel: MediaUploadPreviewScreenViewModelType, 
          title: String?,
          shouldShowCaptionWarning: Bool,
          galleryEnabled: Bool,
+         imageDrawingEnabled: Bool,
          mediaUploadingPreprocessor: MediaUploadingPreprocessor,
          timelineController: TimelineControllerProtocol,
          clientProxy: ClientProxyProtocol,
@@ -49,9 +51,16 @@ class MediaUploadPreviewScreenViewModel: MediaUploadPreviewScreenViewModelType, 
         // Start processing the media whilst the user is reviewing it/adding a caption.
         processingTask = Self.processMedia(at: mediaURLs, preprocessor: mediaUploadingPreprocessor, clientProxy: clientProxy)
         
+        let drawableMediaIndices: Set<Int> = if #available(iOS 26, *), imageDrawingEnabled {
+            Set(mediaURLs.indices.filter { ImageDrawingRenderer.canDraw(onImageAt: mediaURLs[$0]) })
+        } else {
+            []
+        }
+        
         super.init(initialViewState: MediaUploadPreviewScreenViewState(mediaURLs: mediaURLs,
                                                                        title: title,
                                                                        shouldShowCaptionWarning: shouldShowCaptionWarning,
+                                                                       drawableMediaIndices: drawableMediaIndices,
                                                                        bindings: .init(caption: caption ?? NSAttributedString())))
     }
     
@@ -61,6 +70,8 @@ class MediaUploadPreviewScreenViewModel: MediaUploadPreviewScreenViewModelType, 
         
         switch viewAction {
         case .send:
+            guard !state.shouldDisableInteraction else { return }
+            
             startLoading()
             
             Task { [processingTask] in
@@ -120,6 +131,8 @@ class MediaUploadPreviewScreenViewModel: MediaUploadPreviewScreenViewModelType, 
             } catch {
                 MXLog.error("Failed writing cropped image with error: \(error)")
             }
+        case .drewOnMedia(let drawing, let index):
+            saveDrawing(drawing, onMediaAt: index)
         }
     }
     
@@ -157,16 +170,52 @@ class MediaUploadPreviewScreenViewModel: MediaUploadPreviewScreenViewModelType, 
     }
     
     func stopProcessing() {
+        drawingSaveTask?.cancel()
         processingTask.cancel()
     }
     
     // MARK: - Private
     
+    private func saveDrawing(_ drawing: ImageDrawing, onMediaAt index: Int) {
+        guard !state.shouldDisableInteraction, mediaURLs.indices.contains(index) else { return }
+        
+        startLoading()
+        let cancelledProcessingTask = processingTask
+        cancelledProcessingTask.cancel()
+        
+        drawingSaveTask = Task {
+            defer { stopLoading() }
+            
+            // Otherwise its image decodes can overlap the full-size decode of the save.
+            _ = await cancelledProcessingTask.value
+            guard !Task.isCancelled else { return } // The screen was dismissed meanwhile.
+            
+            do {
+                try await ImageDrawingRenderer.draw(drawing, ontoImageAt: mediaURLs[index])
+                state.mediaEditVersion += 1
+            } catch {
+                MXLog.error("Failed saving the drawing with error: \(error)")
+                showError(label: L10n.errorUnknown)
+            }
+            
+            guard !Task.isCancelled else { return } // The screen was dismissed meanwhile.
+            processingTask = Self.processMedia(at: mediaURLs, preprocessor: mediaUploadingPreprocessor, clientProxy: clientProxy)
+        }
+    }
+    
     private static func processMedia(at urls: [URL],
                                      preprocessor: MediaUploadingPreprocessor,
                                      clientProxy: ClientProxyProtocol) -> Task<Result<[MediaInfo], MediaUploadingPreprocessorError>, Never> {
         Task {
-            guard case let .success(maxUploadSize) = await clientProxy.maxMediaUploadSize else { return .failure(.maxUploadSizeUnknown) }
+            // The SDK call ignores cancellation and can hang on a bad network, the stream lets a cancelled task stop waiting for it.
+            let (maxUploadSizes, continuation) = AsyncStream<Result<UInt, ClientProxyError>>.makeStream()
+            Task {
+                await continuation.yield(clientProxy.maxMediaUploadSize)
+                continuation.finish()
+            }
+            var iterator = maxUploadSizes.makeAsyncIterator()
+            guard let maxUploadSizeResult = await iterator.next() else { return .failure(.cancelled) }
+            guard case let .success(maxUploadSize) = maxUploadSizeResult else { return .failure(.maxUploadSizeUnknown) }
             return await preprocessor.processMedia(at: urls, maxUploadSize: maxUploadSize)
         }
     }
