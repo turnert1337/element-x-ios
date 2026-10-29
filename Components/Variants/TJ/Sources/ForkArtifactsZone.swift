@@ -126,7 +126,7 @@ struct ForkArtifactCanvas: View {
     private func content(for entry: ForkArtifactEntry) -> some View {
         switch entry.source {
         case .html:
-            ForkHTMLArtifactView(model: model, entry: entry)
+            ForkHTMLArtifactView(model: model, entry: entry, isFullScreenHost: isFullScreenHost)
                 .id(entry.aid)
         case .native(let id):
             switch ForkNativeArtifacts.decision(for: entry) {
@@ -149,12 +149,13 @@ struct ForkArtifactCanvas: View {
 struct ForkHTMLArtifactView: View {
     let model: ForkArtifactsModel
     let entry: ForkArtifactEntry
+    var isFullScreenHost = false
 
     var body: some View {
         let state = model.htmlStates[entry.aid]
         Group {
             if model.liveHosts[entry.aid] != nil, let host = ForkArtifactWebPool.shared.host(forKey: model.hostKey(entry.aid)) {
-                ForkArtifactWebContainer(host: host) { model.noteTouch(aid: entry.aid) }
+                ForkArtifactWebContainer(host: host, isOwner: model.isFullScreen == isFullScreenHost) { model.noteTouch(aid: entry.aid) }
                     .ignoresSafeArea(.container, edges: .bottom)
             } else if let error = state?.error, state?.readyVersion == nil {
                 ForkArtifactMessage(symbol: "exclamationmark.octagon", title: "Can't show \(entry.title)", detail: error)

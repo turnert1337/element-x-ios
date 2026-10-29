@@ -350,7 +350,7 @@ struct ForkDevLogReceipt: View {
             }
             HStack(spacing: 6) {
                 if let number = ticket.build?.number { Text("Build \(number)").monospacedDigit() }
-                if let tf = ticket.build?.testflight { Text("· TestFlight \(tf)") }
+                if let tf = ticket.build?.testflight { Text(ticket.build?.number == nil ? "TestFlight \(tf)" : "· TestFlight \(tf)") }
                 Spacer()
                 if let updated = ticket.updatedTS { Text("Updated \(ForkDevLogFormat.relative(updated))") }
             }

@@ -8,6 +8,7 @@
 // `rootCoordinator is RoomScreenCoordinator` assertions keep holding with no test edit.
 //
 
+import OSLog
 import SwiftUI
 
 enum ForkRoomChrome {
@@ -129,6 +130,9 @@ final class ForkRoomChromeCoordinator: CoordinatorProtocol {
     }
 
     func columnVisibilityChanged(_ visibility: NavigationSplitViewVisibility?) {
+        #if DEBUG
+        Logger(subsystem: "tj.artifacts", category: "chrome").notice("TJCHROME visibility=\(String(describing: visibility), privacy: .public) mode=\(String(describing: self.model.layoutMode), privacy: .public) repositioning=\(self.isRepositioning, privacy: .public)")
+        #endif
         // §5.3: the user re-showing the sidebar while split closes the zone (selection, views, timer stay in the model).
         guard !isRepositioning, model.layoutMode == .split, let visibility, visibility != .detailOnly else { return }
         model.savedColumnVisibility = nil
@@ -144,6 +148,11 @@ final class ForkRoomChromeCoordinator: CoordinatorProtocol {
 
     private func transition(to target: ForkArtifactLayout.Mode) {
         let current = model.layoutMode
+        #if DEBUG
+        if target != current {
+            Logger(subsystem: "tj.artifacts", category: "chrome").notice("TJCHROME transition \(String(describing: current), privacy: .public) -> \(String(describing: target), privacy: .public) window=\(self.state.windowWidth, privacy: .public) size=\(String(describing: self.state.sizeClass), privacy: .public)")
+        }
+        #endif
         guard target != current else { return }
         isRepositioning = true
         defer { isRepositioning = false }
@@ -353,9 +362,12 @@ struct ForkRoomChromeView: View {
 
     var body: some View {
         let widths = ForkArtifactLayout.splitWidths(detailWidth: state.detailWidth)
+        // The chat takes whatever the pane leaves, and the HStack is greedy, so the measured width is always the space
+        // the detail column offers (G-A3 run 1 on iPad: with both children at fixed widths the HStack hugged them, kept
+        // the width measured while the sidebar was still showing, and never grew once `.detailOnly` widened the column).
         HStack(spacing: 0) {
             coordinator.innerPresentable
-                .frame(width: showsPane ? widths.chat : nil)
+                .frame(minWidth: 0, maxWidth: .infinity)
             if showsPane {
                 Divider()
                 ForkArtifactsPane(model: model, actions: coordinator.zoneActions)
@@ -363,6 +375,7 @@ struct ForkRoomChromeView: View {
                     .transition(.move(edge: .trailing))
             }
         }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
         .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { state.detailWidth = $0 }
         .toolbar { ForkRoomToolbar(coordinator: coordinator, model: model, collapseDevLog: collapseDevLog).content }
         .background {

@@ -11,6 +11,7 @@
 //   the same view and a fold never reloads a game (D10).
 //
 
+import OSLog
 import SwiftUI
 import WebKit
 
@@ -281,6 +282,10 @@ final class ForkArtifactWebPool {
 /// the web view if this container still owns it, so SwiftUI building the new container first is harmless.
 struct ForkArtifactWebContainer: UIViewRepresentable {
     let host: ForkArtifactWebHost
+    /// Only the surface that should show the artifact now (full screen while it's up, else the zone) adopts the web view.
+    /// Without it, the zone's outgoing container got one last update after the overlay adopted the view, took it back, and
+    /// then removed it when dismantled: a blank full screen (G-A2 run 2, TJWEB log in build/b3/fulldbg_tjweb.log).
+    var isOwner = true
     let onTouch: () -> Void
 
     func makeUIView(context: Context) -> ForkWebContainerView {
@@ -291,7 +296,7 @@ struct ForkArtifactWebContainer: UIViewRepresentable {
 
     func updateUIView(_ uiView: ForkWebContainerView, context: Context) {
         uiView.onTouch = onTouch
-        uiView.adopt(host.webView)
+        if isOwner { uiView.adopt(host.webView) }
     }
 
     static func dismantleUIView(_ uiView: ForkWebContainerView, coordinator: ()) {
@@ -300,6 +305,14 @@ struct ForkArtifactWebContainer: UIViewRepresentable {
 }
 
 final class ForkWebContainerView: UIView, UIGestureRecognizerDelegate {
+    #if DEBUG
+    static let log = Logger(subsystem: "tj.artifacts", category: "web")
+
+    override func didMoveToWindow() {
+        super.didMoveToWindow()
+        ForkWebContainerView.log.notice("TJWEB container=\(ObjectIdentifier(self).hashValue, privacy: .public) window=\(String(describing: self.window.map { type(of: $0) }), privacy: .public) frame=\(String(describing: self.bounds.size), privacy: .public) hasWeb=\(self.adopted?.superview === self, privacy: .public)")
+    }
+    #endif
     var onTouch: (() -> Void)?
     private weak var adopted: WKWebView?
 
@@ -323,6 +336,9 @@ final class ForkWebContainerView: UIView, UIGestureRecognizerDelegate {
     }
 
     func adopt(_ webView: WKWebView) {
+        #if DEBUG
+        ForkWebContainerView.log.notice("TJWEB adopt container=\(ObjectIdentifier(self).hashValue, privacy: .public) window=\(String(describing: self.window.map { type(of: $0) }), privacy: .public) already=\(webView.superview === self, privacy: .public) from=\(webView.superview.map { ObjectIdentifier($0).hashValue } ?? 0, privacy: .public)")
+        #endif
         guard webView.superview !== self else { return }
         webView.removeFromSuperview()
         webView.translatesAutoresizingMaskIntoConstraints = false
@@ -335,6 +351,9 @@ final class ForkWebContainerView: UIView, UIGestureRecognizerDelegate {
     }
 
     func releaseWebView() {
+        #if DEBUG
+        ForkWebContainerView.log.notice("TJWEB release container=\(ObjectIdentifier(self).hashValue, privacy: .public) owns=\(self.adopted?.superview === self, privacy: .public)")
+        #endif
         if let adopted, adopted.superview === self {
             adopted.removeFromSuperview()
         }
