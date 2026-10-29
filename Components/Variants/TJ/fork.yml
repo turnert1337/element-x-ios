@@ -30,7 +30,19 @@ targets:
         keychain-access-groups:
         - $(KEYCHAIN_ACCESS_GROUP_IDENTIFIER)
     sources:
-    - path: Sources                     # → Components/Variants/TJ/Sources (ForkHooks.swift)
+    - path: Sources                     # → Components/Variants/TJ/Sources (ForkHooks.swift, ForkDuo*.swift)
+    settings:
+      base:
+        # Duo prep (WatchLab/Element/01_DUO_SPEC.md, research/duo/06_prep_on_26.md §2). -DIS_MAIN_APP stays in
+        # OTHER_SWIFT_FLAGS (ElementX/SupportingFiles/target.yml). TJ_SDK27 is set only when building against an
+        # iOS 27.x SDK, so 27.1-only code (`#if TJ_SDK27`) is never compiled by Xcode 26.6.
+        SWIFT_ACTIVE_COMPILATION_CONDITIONS: "$(inherited) TJ_DUO_PROBE TJ_DUO_BACKSCREEN"
+        "SWIFT_ACTIVE_COMPILATION_CONDITIONS[sdk=iphoneos27*]": "$(inherited) TJ_DUO_PROBE TJ_DUO_BACKSCREEN TJ_SDK27"
+        "SWIFT_ACTIVE_COMPILATION_CONDITIONS[sdk=iphonesimulator27*]": "$(inherited) TJ_DUO_PROBE TJ_DUO_BACKSCREEN TJ_SDK27"
+
+  UnitTests:
+    sources:
+    - path: Tests                       # → Components/Variants/TJ/Tests (ForkDuoBackScreenPolicyTests.swift)
 
   NSE:
     entitlements:
@@ -46,7 +58,7 @@ targets:
 
 # ---------------------------------------------------------------------------------------------
 # G5 toolchain workarounds (Xcode 26.6 / Swift 6.3.3; upstream CI builds with Xcode 27).
-# Full record: WatchLab/Element/build/g5_fixes.md. Upstream source edits so far: 1 of 3 (cap).
+# Full record: WatchLab/Element/build/g5_fixes.md. Upstream source edits so far: 2 of 3 (cap).
 #
 # 1. ElementX/Sources/Screens/Timeline/TimelineViewModel.swift:53 (TimelineViewModel.init)
 #    marked @_optimize(none). Release -O crashed swift-frontend: "Invalid SIL provided to
@@ -57,4 +69,11 @@ targets:
 #    module for nothing). @_optimize(none) alone compiles the module (isolated -O replay rc=0).
 #    -disable-sil-ownership-verifier is deliberately NOT used.
 #    Drop this edit when the Workshop moves to Xcode 27.
+#
+# 2. ElementX/Sources/Mocks/JoinedRoomProxyMock.swift (init): `saveDraftThreadRootEventIDReturnValue = .success(())`,
+#    beside upstream's loadDraft/clearDraft lines. TEST FIXTURE ONLY, no product code path. The no-login fixture
+#    (UI_TESTS_SCREEN=userSessionScreen) left saveDraft unconfigured, so Sourcery's mock crashed on purpose the moment a
+#    composer holding text disappeared, which is exactly what a fold (stack <-> split swap) does
+#    (ComposerToolbarViewModel `.composerDisappeared` -> saveDraft). Needed for the Duo-prep draft-survives-fold test
+#    (WatchLab/Element/build/duo_prep.txt). Upstreamable as-is; drop if upstream configures it.
 # ---------------------------------------------------------------------------------------------
