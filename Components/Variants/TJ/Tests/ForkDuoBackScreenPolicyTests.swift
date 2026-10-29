@@ -47,6 +47,14 @@ struct ForkDuoBackScreenPolicyTests {
         #expect(ForkDuoBackScreenPolicy.formatElapsed(-3) == "0:00")
     }
 
+    /// v2 ships the card dark (01_DUO_SPEC.md §4.1 item 3, §6.1): an unset `tj.duo.backScreen` means Off,
+    /// and Off never registers, whatever else is true.
+    @Test
+    func backScreenDefaultsToOff() {
+        #expect(ForkDuoSettings.defaultBackScreenMode == .off)
+        #expect(!makePolicy(mode: ForkDuoSettings.defaultBackScreenMode, captureRunning: true, forceSim: true).shouldRegister)
+    }
+
     // MARK: - Helpers
 
     private func makePolicy(mode: ForkDuoSettings.BackScreenMode = .statusOnly,

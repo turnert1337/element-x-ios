@@ -32,13 +32,22 @@ targets:
     sources:
     - path: Sources                     # → Components/Variants/TJ/Sources (ForkHooks.swift, ForkDuo*.swift)
     settings:
+      # Duo prep (WatchLab/Element/01_DUO_SPEC.md, research/duo/06_prep_on_26.md §2). -DIS_MAIN_APP stays in
+      # OTHER_SWIFT_FLAGS (ElementX/SupportingFiles/target.yml). TJ_SDK27 is set only when building against an
+      # iOS 27.x SDK, so 27.1-only code (`#if TJ_SDK27`) is never compiled by Xcode 26.6.
+      # TJ_DUO_BACKSCREEN: every config (Release included). The card ships dark: its runtime mode defaults to Off
+      #   and nothing registers while Off (spec §4.1 item 3, §6.1, ForkDuoSettings.defaultBackScreenMode).
+      # TJ_DUO_PROBE: Debug only, never Release (integration validator, 2026-10-29). NOTE: spec rev 2 §4.1 item 2 /
+      #   §5.4 / §9.5 assumes the probe in TestFlight; to run the §9.5 device pass, re-add it to Release on purpose.
       base:
-        # Duo prep (WatchLab/Element/01_DUO_SPEC.md, research/duo/06_prep_on_26.md §2). -DIS_MAIN_APP stays in
-        # OTHER_SWIFT_FLAGS (ElementX/SupportingFiles/target.yml). TJ_SDK27 is set only when building against an
-        # iOS 27.x SDK, so 27.1-only code (`#if TJ_SDK27`) is never compiled by Xcode 26.6.
-        SWIFT_ACTIVE_COMPILATION_CONDITIONS: "$(inherited) TJ_DUO_PROBE TJ_DUO_BACKSCREEN"
-        "SWIFT_ACTIVE_COMPILATION_CONDITIONS[sdk=iphoneos27*]": "$(inherited) TJ_DUO_PROBE TJ_DUO_BACKSCREEN TJ_SDK27"
-        "SWIFT_ACTIVE_COMPILATION_CONDITIONS[sdk=iphonesimulator27*]": "$(inherited) TJ_DUO_PROBE TJ_DUO_BACKSCREEN TJ_SDK27"
+        SWIFT_ACTIVE_COMPILATION_CONDITIONS: "$(inherited) TJ_DUO_BACKSCREEN"
+        "SWIFT_ACTIVE_COMPILATION_CONDITIONS[sdk=iphoneos27*]": "$(inherited) TJ_DUO_BACKSCREEN TJ_SDK27"
+        "SWIFT_ACTIVE_COMPILATION_CONDITIONS[sdk=iphonesimulator27*]": "$(inherited) TJ_DUO_BACKSCREEN TJ_SDK27"
+      configs:
+        Debug:
+          SWIFT_ACTIVE_COMPILATION_CONDITIONS: "$(inherited) TJ_DUO_PROBE TJ_DUO_BACKSCREEN"
+          "SWIFT_ACTIVE_COMPILATION_CONDITIONS[sdk=iphoneos27*]": "$(inherited) TJ_DUO_PROBE TJ_DUO_BACKSCREEN TJ_SDK27"
+          "SWIFT_ACTIVE_COMPILATION_CONDITIONS[sdk=iphonesimulator27*]": "$(inherited) TJ_DUO_PROBE TJ_DUO_BACKSCREEN TJ_SDK27"
 
   UnitTests:
     sources:
@@ -57,8 +66,9 @@ targets:
 # driven by the variables above (ShareExtension/SupportingFiles/target.yml:65-71).
 
 # ---------------------------------------------------------------------------------------------
+# Upstream source edits so far: 2 of 3 (cap). 1 = product (G5 below), 2 = TEST FIXTURE ONLY (no product code path).
 # G5 toolchain workarounds (Xcode 26.6 / Swift 6.3.3; upstream CI builds with Xcode 27).
-# Full record: WatchLab/Element/build/g5_fixes.md. Upstream source edits so far: 2 of 3 (cap).
+# Full record: WatchLab/Element/build/g5_fixes.md.
 #
 # 1. ElementX/Sources/Screens/Timeline/TimelineViewModel.swift:53 (TimelineViewModel.init)
 #    marked @_optimize(none). Release -O crashed swift-frontend: "Invalid SIL provided to

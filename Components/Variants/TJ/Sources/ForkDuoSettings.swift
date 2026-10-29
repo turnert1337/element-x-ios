@@ -35,8 +35,12 @@ nonisolated enum ForkDuoSettings {
     }
 
     static var backScreenMode: BackScreenMode {
-        UserDefaults.standard.string(forKey: Key.backScreen).flatMap(BackScreenMode.init) ?? .statusOnly
+        UserDefaults.standard.string(forKey: Key.backScreen).flatMap(BackScreenMode.init) ?? defaultBackScreenMode
     }
+
+    /// v2 ships the card dark: Off, so nothing registers until the operator opts in for G4-device
+    /// (01_DUO_SPEC.md §0.2 item 1, §4.1 item 3, §6.1). Status only becomes the default in v2.1, only if G4-device passes.
+    static let defaultBackScreenMode: BackScreenMode = .off
 
     /// Simulator only: the sim has no camera, so this stands in for a running capture session (G4).
     static var backScreenForceSim: Bool {
@@ -66,8 +70,10 @@ private nonisolated struct ForkDuoRowsHost: View {
 }
 
 private struct ForkDuoRowsView: View {
+    #if TJ_DUO_PROBE
     @AppStorage(ForkDuoSettings.Key.probe) private var probeEnabled = true
-    @AppStorage(ForkDuoSettings.Key.backScreen) private var backScreenMode = ForkDuoSettings.BackScreenMode.statusOnly.rawValue
+    #endif
+    @AppStorage(ForkDuoSettings.Key.backScreen) private var backScreenMode = ForkDuoSettings.defaultBackScreenMode.rawValue
     @AppStorage(ForkDuoSettings.Key.backScreenForceSim) private var forceSim = false
 
     #if DEBUG && targetEnvironment(simulator)
@@ -75,10 +81,13 @@ private struct ForkDuoRowsView: View {
     #endif
 
     var body: some View {
+        #if TJ_DUO_PROBE
+        // The probe is compiled into Debug builds only (fork.yml), so the row exists only there.
         Toggle(isOn: $probeEnabled) {
             Text("Duo probe")
             Text("Logs size class, layout and scenes (DuoProbe) and shows a 4 s pill after each change. Never content.")
         }
+        #endif
 
         Picker(selection: $backScreenMode) {
             ForEach(ForkDuoSettings.BackScreenMode.allCases, id: \.rawValue) { mode in
