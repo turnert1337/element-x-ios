@@ -16,7 +16,7 @@ nonisolated extension AppHooks {
         registerAppSettingsHook(ForkAppSettingsHook())
         // Duo (WatchLab/Element/01_DUO_SPEC.md §5.2): signed-in dev-options rows, pre-login dev-options rows.
         registerUserSessionHook(ForkUserSessionHook())
-        registerDeveloperOptionsScreenHook(ForkDuoDeveloperRows())
+        registerDeveloperOptionsScreenHook(ForkDuoDeveloperRows(userID: nil)) // pre-login: no Dev log row
         Task { @MainActor in
             ForkDuoRuntime.start(reason: "app-hooks")
         }

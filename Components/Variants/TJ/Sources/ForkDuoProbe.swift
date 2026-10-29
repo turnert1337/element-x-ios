@@ -37,6 +37,8 @@ final class ForkDuoProbe {
 
     /// Extra fields appended by other TJ components (e.g. the back-screen controller's `acc=` state).
     var accessoryState = "n/a"
+    /// Artifacts zone posture (`-` | push | split | full), set by ForkRoomChrome (03_ARTIFACTS_SPEC.md §5.1).
+    var artifactsState = "-"
 
     func start() {
         guard !isStarted else { return }
@@ -192,7 +194,8 @@ final class ForkDuoProbe {
             "kb=\(isKeyboardVisible ? 1 : 0)",
             "lock=\(isLockScreenVisible ? 1 : 0)",
             Self.foldFields(),
-            "acc=\(accessoryState)"
+            "acc=\(accessoryState)",
+            "artifacts=\(artifactsState)"
         ]
         return fields.joined(separator: " ")
     }

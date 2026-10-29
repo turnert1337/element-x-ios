@@ -11,7 +11,7 @@ import MatrixRustSDK
 nonisolated struct ForkUserSessionHook: UserSessionHookProtocol {
     #if IS_MAIN_APP
     func makeUserHooks(for clientProxy: ClientProxyProtocol) -> UserHooks {
-        UserHooks(developerOptionsScreenHook: ForkDuoDeveloperRows())
+        UserHooks(developerOptionsScreenHook: ForkDuoDeveloperRows(userID: clientProxy.userID))
     }
     #endif
 

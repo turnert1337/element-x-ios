@@ -74,20 +74,28 @@ nonisolated enum ForkDuoSettings {
 /// Registered twice: as the pre-login `AppHooks.developerOptionsScreenHook` and, via `ForkUserSessionHook`,
 /// as the signed-in `UserHooks.developerOptionsScreenHook` (`SettingsFlowCoordinator.swift:318`).
 nonisolated struct ForkDuoDeveloperRows: DeveloperOptionsScreenHookProtocol {
+    /// The signed-in user (from `ForkUserSessionHook.makeUserHooks(for:)`); nil pre-login, which hides the Dev log row
+    /// (03_ARTIFACTS_SPEC.md §5.7).
+    let userID: String?
+
     func generalSectionRows() -> AnyView? {
         // The protocol is nonisolated; AnyView.init is too, so wrap a stateless nonisolated host whose
         // (main-actor) body builds the real rows. No MainActor.assumeIsolated needed (AnyView isn't Sendable).
-        AnyView(ForkDuoRowsHost())
+        AnyView(ForkDuoRowsHost(userID: userID))
     }
 }
 
 private nonisolated struct ForkDuoRowsHost: View {
+    let userID: String?
+
     var body: some View {
-        ForkDuoRowsView()
+        ForkDuoRowsView(userID: userID)
     }
 }
 
 private struct ForkDuoRowsView: View {
+    let userID: String?
+
     #if TJ_DUO_PROBE
     @AppStorage(ForkDuoSettings.Key.probe) private var probeEnabled = ForkDuoSettings.defaultProbeEnabled
     #endif
@@ -100,6 +108,17 @@ private struct ForkDuoRowsView: View {
     #endif
 
     var body: some View {
+        if let userID {
+            // Pushed inside Settings' own stack; no "Jump to message" here (no room flow).
+            NavigationLink {
+                ForkDevLogScreen(model: ForkDevLogModel(rest: ForkMatrixREST(userID: userID)), jumpToMessage: nil)
+            } label: {
+                Text("Dev log")
+                Text("Workshop tickets and receipts (TJ Dev Log room).")
+            }
+            .accessibilityIdentifier("tj_settings-devlog")
+        }
+
         #if TJ_DUO_PROBE
         // Compiled into every config (fork.yml); off by default in Release, on in Debug (D1).
         Toggle(isOn: $probeEnabled) {

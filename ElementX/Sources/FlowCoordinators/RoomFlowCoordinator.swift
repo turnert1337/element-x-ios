@@ -627,7 +627,7 @@ class RoomFlowCoordinator: FlowCoordinatorProtocol {
         roomScreenCoordinator = coordinator
         
         if !isChildFlow {
-            navigationStackCoordinator.setRootCoordinator(coordinator, animated: animated) { [weak self] in
+            navigationStackCoordinator.setRootCoordinator(ForkRoomChrome.wrap(coordinator, roomProxy: roomProxy, stack: navigationStackCoordinator, flowParameters: flowParameters, flow: self), animated: animated) { [weak self] in
                 self?.stateMachine.tryEvent(.dismissFlow)
             }
         } else {
@@ -635,7 +635,7 @@ class RoomFlowCoordinator: FlowCoordinatorProtocol {
                 navigationStackCoordinator.pop()
             }
             
-            navigationStackCoordinator.push(coordinator, animated: animated) { [weak self] in
+            navigationStackCoordinator.push(ForkRoomChrome.wrap(coordinator, roomProxy: roomProxy, stack: navigationStackCoordinator, flowParameters: flowParameters, flow: self), animated: animated) { [weak self] in
                 self?.stateMachine.tryEvent(.dismissFlow)
             }
         }
