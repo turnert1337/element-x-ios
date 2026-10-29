@@ -1,6 +1,7 @@
 # TJ fork override layer (iOS Workshop, Element card).
 # Included from project.yml (the one upstream line edited). Paths here are relative to this file.
 # On an upstream sync: take upstream's pbxproj/plists/entitlements, rerun `xcodegen generate`.
+# Entitlement override changes: push v1 (aps-environment back on ElementX; NSE filtering still stripped).
 settings:
   APP_DISPLAY_NAME: TJ Element          # home-screen label; ASC/TestFlight name is "ElemenTT"
   PRODUCTION_APP_NAME: TJ Element
@@ -15,10 +16,13 @@ settings:
 targets:
   ElementX:
     entitlements:
-      # Upstream ElementX entitlements MINUS aps-environment, usernotifications.communication
-      # and associated-domains (v1: no push, not in element.io's AASA). The CLASSIC_* entries
-      # resolve to the same group/keychain as below, so they are not repeated.
+      # Upstream ElementX entitlements MINUS usernotifications.communication (no ASC capability
+      # type; the NSE degrades via try?) and associated-domains (not in element.io's AASA).
+      # aps-environment is kept as upstream's `development` (push v1); the App Store profile makes
+      # it `production` at export. The CLASSIC_* entries resolve to the same group/keychain as
+      # below, so they are not repeated.
       properties:REPLACE:
+        aps-environment: development
         com.apple.security.app-sandbox: true
         com.apple.security.network.client: true
         com.apple.security.application-groups:

@@ -27,6 +27,9 @@ nonisolated extension AppHooks {
 ///   - redirect_uri = `oAuthRedirectURL`, a custom scheme (no associated domain / AASA needed)
 /// - `accountProviders`: the operator's own homeserver first (the login default), matrix.org second.
 ///   `allowOtherAccountProviders` stays `true`, so "Change server" still accepts any server (e.g. matrix.org).
+/// - `pushGatewayBaseURL`: the operator's own Sygnal (push v1), not matrix.org's gateway, which cannot
+///   deliver to this bundle id. The pusher app id is NOT overridden (and is not hookable): it derives as
+///   BASE_BUNDLE_IDENTIFIER + ".ios.prod" (Release) = `com.turnertomlinson.element.ios.prod`, the Sygnal app key.
 nonisolated struct ForkAppSettingsHook: AppSettingsHookProtocol {
     /// OAuth client_uri. The redirect scheme below must be this host reversed (MAS rule for native clients).
     static let websiteURL: URL = "https://autopute.ai/"
@@ -42,6 +45,12 @@ nonisolated struct ForkAppSettingsHook: AppSettingsHookProtocol {
     static let oAuthRedirectURL: URL = "ai.autopute:/callback"
 
     /// The operator's private homeserver: server name `autopute.ai` (.well-known delegated to matrix.autopute.ai).
+    /// Push gateway: Sygnal on the always-on Mac (127.0.0.1:5005) behind tunnel path ^/_matrix/push/v1/notify$.
+    /// Origin only: AppSettings appends `_matrix/push/v1/notify` (AppSettings.swift:226-228) and Synapse
+    /// requires exactly that path (synapse/push/httppusher.py:154-160). Public URL, so pushers registered
+    /// on other homeservers (matrix.org, the second account provider) reach it too.
+    static let pushGatewayBaseURL: URL = "https://matrix.autopute.ai"
+
     static let accountProviders: [AccountProvider] = [.managed(serverName: "autopute.ai", baseURL: "https://matrix.autopute.ai"),
                                                       .managed(serverName: "matrix.org", baseURL: "https://matrix-client.matrix.org")]
 
@@ -49,7 +58,7 @@ nonisolated struct ForkAppSettingsHook: AppSettingsHookProtocol {
         appSettings.override(accountProviders: Self.accountProviders,
                              allowOtherAccountProviders: true,
                              hideBrandChrome: appSettings.hideBrandChrome,
-                             pushGatewayBaseURL: appSettings.pushGatewayBaseURL,
+                             pushGatewayBaseURL: Self.pushGatewayBaseURL,
                              oAuthRedirectURL: Self.oAuthRedirectURL,
                              oAuthClientURIPath: Self.oAuthClientURIPath,
                              websiteURL: Self.websiteURL,
