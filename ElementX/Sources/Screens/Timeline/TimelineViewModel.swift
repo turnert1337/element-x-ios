@@ -47,6 +47,9 @@ class TimelineViewModel: TimelineViewModelType, TimelineViewModelProtocol {
     private var paginateBackwardsTask: Task<Void, Never>?
     private var paginateForwardsTask: Task<Void, Never>?
     
+    // TJ fork (G5): Xcode 26.6 / Swift 6.3.3 -O crashes in OSSACompleteLifetime on this init
+    // (CopyPropagation, then Mem2Reg). Opt out of SIL optimization for this one function. See Components/Variants/TJ/fork.yml.
+    @_optimize(none)
     init(roomProxy: JoinedRoomProxyProtocol,
          focussedEventID: String? = nil,
          timelineController: TimelineControllerProtocol,
