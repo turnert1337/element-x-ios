@@ -132,6 +132,7 @@ extension JoinedRoomProxyMock {
         matrixToEventPermalinkReturnValue = .success(.homeDirectory)
         loadDraftThreadRootEventIDReturnValue = .success(nil)
         clearDraftThreadRootEventIDReturnValue = .success(())
+        saveDraftThreadRootEventIDReturnValue = .success(()) // TJ fork (Duo prep): fold tests flip with a draft in the no-login fixture
         sendTypingNotificationIsTypingReturnValue = .success(())
         isVisibleInRoomDirectoryReturnValue = .success(configuration.isVisibleInPublicDirectory)
         

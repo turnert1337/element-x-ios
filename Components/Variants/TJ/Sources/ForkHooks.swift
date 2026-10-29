@@ -14,6 +14,12 @@ import Foundation
 nonisolated extension AppHooks {
     func setUp() {
         registerAppSettingsHook(ForkAppSettingsHook())
+        // Duo (WatchLab/Element/01_DUO_SPEC.md §5.2): signed-in dev-options rows, pre-login dev-options rows.
+        registerUserSessionHook(ForkUserSessionHook())
+        registerDeveloperOptionsScreenHook(ForkDuoDeveloperRows())
+        Task { @MainActor in
+            ForkDuoRuntime.start(reason: "app-hooks")
+        }
     }
 }
 
