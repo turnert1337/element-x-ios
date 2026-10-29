@@ -4,6 +4,8 @@
 //
 // Spec: WatchLab/Element/03_ARTIFACTS_SPEC.md rev 3, §5.3 (compact pushed screen, regular side pane with an in-content
 // header strip + zone rail, full screen), §5.4 (D16 chip, change note), §5.6b (Request a change).
+// Under a horizontal bar the pushed screen uses the pane's header strip too: on a 430 pt iPhone, Back + the 5 artifact
+// actions fill the bar and iOS drops the .principal item (title, pipe badge and options menu all vanished, build 3 E2E).
 // Both pipes land in this one zone; every artifact carries its pipe badge (D7).
 //
 
@@ -230,28 +232,40 @@ struct ForkArtifactsScreen: View {
     let model: ForkArtifactsModel
     let actions: ForkArtifactsActions
 
+    /// The iOS 27.1 vertical bar (closed Duo) has room for the principal item; every horizontal bar gets the header strip.
+    @State private var hasVerticalBar = false
+
     var body: some View {
         ForkArtifactCanvas(model: model)
             .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .overlay(alignment: .bottom) { ForkArtifactChangeNote(model: model).allowsHitTesting(false) }
+            .safeAreaInset(edge: .top, spacing: 0) {
+                if !hasVerticalBar { ForkArtifactsPaneHeader(model: model, actions: actions) }
+            }
+            .overlay(alignment: .bottom) {
+                if hasVerticalBar { ForkArtifactChangeNote(model: model).allowsHitTesting(false) }
+            }
             .navigationBarTitleDisplayMode(.inline)
             .toolbar { toolbar }
             .toolbarBackground(.visible, for: .navigationBar)
+            .background { ForkToolbarEdgeProbe { hasVerticalBar = $0 } }
             .onAppear { model.zoneAppeared() }
             .onDisappear { model.zoneDisappeared() }
+            .accessibilityElement(children: .contain)
             .accessibilityIdentifier("tj_artifacts-screen")
     }
 
     @ToolbarContentBuilder
     private var toolbar: some ToolbarContent {
-        ToolbarItem(placement: .principal) {
-            HStack(spacing: 8) {
-                if ForkArtifactChips.hasChip(model) {
-                    ForkArtifactChips(model: model, actions: actions)
-                } else {
-                    ForkArtifactTitleLabel(entry: model.selectedEntry)
+        if hasVerticalBar {
+            ToolbarItem(placement: .principal) {
+                HStack(spacing: 8) {
+                    if ForkArtifactChips.hasChip(model) {
+                        ForkArtifactChips(model: model, actions: actions)
+                    } else {
+                        ForkArtifactTitleLabel(entry: model.selectedEntry)
+                    }
+                    ForkArtifactHeaderMenu(model: model, actions: actions)
                 }
-                ForkArtifactHeaderMenu(model: model, actions: actions)
             }
         }
         let entries = model.entries
@@ -336,6 +350,8 @@ struct ForkArtifactsPane: View {
         }
         .onAppear { model.zoneAppeared() }
         .onDisappear { model.zoneDisappeared() }
+        // .contain keeps the header's and the rail's own ids (without it the outer id replaced tj_artifacts-title).
+        .accessibilityElement(children: .contain)
         .accessibilityIdentifier("tj_artifacts-pane")
     }
 }
@@ -358,6 +374,7 @@ struct ForkArtifactsPaneHeader: View {
         .padding(.horizontal, 12)
         .frame(height: 44)
         .background(.regularMaterial)
+        .accessibilityElement(children: .contain)
         .accessibilityIdentifier("tj_artifacts-pane-header")
     }
 }
@@ -391,6 +408,7 @@ struct ForkArtifactRail: View {
             .padding(.horizontal, 8)
         }
         .frame(width: 64)
+        .accessibilityElement(children: .contain)
         .accessibilityIdentifier("tj_artifacts-rail")
     }
 

@@ -21,7 +21,7 @@ struct ForkArtifactSchemaTests {
         #expect(entry.pipe == .nas)
         #expect(entry.title == "Lumen Drift")
         #expect(entry.version == 1)
-        #expect(entry.sha256 == "9f2ce1")
+        #expect(entry.sha256 == ForkArtifactFixtures.sha256)
     }
 
     @Test
@@ -195,6 +195,7 @@ struct ForkArtifactSchemaTests {
 enum ForkArtifactFixtures {
     static let bot = "@tjtest:autopute.ai"
     static let turner = "@turner:autopute.ai"
+    static let sha256 = "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
 
     static let powerLevels: [String: ForkJSON] = ["state_default": .number(50),
                                                   "events": .object(["ai.autopute.artifact": .number(50)]),
@@ -202,7 +203,7 @@ enum ForkArtifactFixtures {
 
     static let html: [String: ForkJSON] = ["v": .number(1), "title": .string("Lumen Drift"), "icon": .string("sparkles"), "pipe": .string("nas"),
                                            "kind": .string("html"), "url": .string("mxc://autopute.ai/AbCdEfGh"), "mimetype": .string("text/html"),
-                                           "size": .number(61234), "sha256": .string("9f2ce1"), "version": .number(1), "order": .number(10),
+                                           "size": .number(61234), "sha256": .string(sha256), "version": .number(1), "order": .number(10),
                                            "updated_ts": .number(1_793_274_000_000), "summary": .string("One-tap flyer through a dusk marsh. Original game."),
                                            "request_event_id": .string("$b_wuAJQCG-rVSUkG-jwXkv8iTV9KHhAZ_aOg2CrWoKQ"), "change_note": .string("Motes 20% bigger.")]
 

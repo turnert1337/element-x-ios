@@ -32,8 +32,14 @@ nonisolated struct ForkArtifactCache: Sendable {
         root.appending(path: aid, directoryHint: .isDirectory).appending(path: "\(version)-\(sha256).html")
     }
 
+    /// Both parts land in a file path, so a value that could leave the cache folder is never used (parse already refuses it).
+    static func isSafeKey(aid: String, sha256: String) -> Bool {
+        ForkArtifactConstants.isValidAID(aid) && ForkArtifactSHA.isValidHex(sha256)
+    }
+
     /// Verified read: a sha mismatch deletes the file and returns nil.
     func read(aid: String, version: Int, sha256: String) -> Data? {
+        guard Self.isSafeKey(aid: aid, sha256: sha256) else { return nil }
         let url = htmlURL(aid: aid, version: version, sha256: sha256)
         guard let data = try? Data(contentsOf: url) else { return nil }
         guard ForkArtifactSHA.matches(data, expected: sha256) else {
@@ -45,6 +51,7 @@ nonisolated struct ForkArtifactCache: Sendable {
 
     /// Writes verified bytes and keeps the 2 newest versions of the aid.
     func write(_ data: Data, aid: String, version: Int, sha256: String) throws {
+        guard Self.isSafeKey(aid: aid, sha256: sha256) else { throw CocoaError(.fileWriteInvalidFileName) }
         let url = htmlURL(aid: aid, version: version, sha256: sha256)
         try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
         try data.write(to: url, options: .atomic)

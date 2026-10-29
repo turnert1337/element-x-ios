@@ -150,6 +150,32 @@ struct ForkArtifactRequestBodyTests {
         await #expect(throws: ForkMatrixREST.RESTError.hostMismatch) { _ = try await rest.state(roomID: "!r:b") }
     }
 
+    /// L6 (c): the Bearer header must never follow a redirect to another host, or from https down to http.
+    @Test
+    func redirectGuardRules() {
+        let home = URL(string: "https://matrix.example.org/_matrix/client/v3/rooms/x/state")
+        #expect(ForkRedirectGuard.allows(from: home, to: URL(string: "https://matrix.example.org/_matrix/other")))
+        #expect(ForkRedirectGuard.allows(from: home, to: URL(string: "https://MATRIX.example.org/x")))
+        #expect(!ForkRedirectGuard.allows(from: home, to: URL(string: "https://evil.example.org/x")))
+        #expect(!ForkRedirectGuard.allows(from: home, to: URL(string: "http://matrix.example.org/x")))
+        #expect(!ForkRedirectGuard.allows(from: home, to: nil))
+        #expect(!ForkRedirectGuard.allows(from: nil, to: home))
+    }
+
+    @Test
+    func crossHostRedirectIsNotFollowed() async {
+        let rest = ForkMatrixREST(userID: "@a:b",
+                                  credentialsProvider: { _ in ForkSessionCredentials(accessToken: "t", homeserverURL: URL(string: "https://matrix.example.org")!) },
+                                  protocolClasses: [ForkRedirectingServer.self])
+        ForkRedirectingServer.reset(target: "https://evil.example.org/steal")
+        await #expect(throws: (any Error).self) { _ = try await rest.state(roomID: "!r:b") }
+        #expect(!ForkRedirectingServer.hosts().contains("evil.example.org"))
+
+        ForkRedirectingServer.reset(target: "https://matrix.example.org/_matrix/client/v3/rooms/moved/state")
+        _ = try? await rest.state(roomID: "!r:b")
+        #expect(ForkRedirectingServer.hosts() == ["matrix.example.org", "matrix.example.org"])
+    }
+
     // MARK: - Helpers
 
     private func expectKey(_ message: ForkArtifactRequestMessage, equals expected: String) throws {
@@ -235,4 +261,40 @@ nonisolated final class ForkStubMatrixServer: URLProtocol {
         }
         return data
     }
+}
+
+/// Answers the first request with a 302 to `target`; any request it is asked for afterwards returns `[]`.
+nonisolated final class ForkRedirectingServer: URLProtocol {
+    private static let state = Mutex((target: "", hosts: [String]()))
+
+    static func reset(target: String) {
+        state.withLock { $0 = (target: target, hosts: []) }
+    }
+
+    static func hosts() -> [String] {
+        state.withLock { $0.hosts }
+    }
+
+    override static func canInit(with request: URLRequest) -> Bool { true }
+    override static func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+
+    override func startLoading() {
+        guard let url = request.url else { return }
+        let (isFirst, target) = Self.state.withLock { state -> (Bool, String) in
+            state.hosts.append(url.host() ?? "")
+            return (state.hosts.count == 1, state.target)
+        }
+        if isFirst, let targetURL = URL(string: target) {
+            let response = HTTPURLResponse(url: url, statusCode: 302, httpVersion: "HTTP/1.1", headerFields: ["Location": target])!
+            client?.urlProtocol(self, wasRedirectedTo: URLRequest(url: targetURL), redirectResponse: response)
+            client?.urlProtocol(self, didFailWithError: CocoaError(.userCancelled))
+            return
+        }
+        let response = HTTPURLResponse(url: url, statusCode: 200, httpVersion: "HTTP/1.1", headerFields: ["Content-Type": "application/json"])!
+        client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+        client?.urlProtocol(self, didLoad: Data("[]".utf8))
+        client?.urlProtocolDidFinishLoading(self)
+    }
+
+    override func stopLoading() { }
 }

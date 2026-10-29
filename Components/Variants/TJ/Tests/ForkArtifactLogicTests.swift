@@ -246,6 +246,47 @@ struct ForkDevLogSchemaTests {
         #expect(ticket.items?.first?.costUSD == 1.5)
     }
 
+    /// rev 3.1 (F1/F7): money is integer micro-USD; the receipt still shows dollars.
+    @Test
+    func microsDecodeToDollars() throws {
+        let content: ForkJSON = .object(["v": .number(1), "id": .string("x"), "title": .string("t"), "stage": .string("building"),
+                                         "cost": .object(["total_usd_micros": .number(12_340_000), "total_is_estimate": .bool(true),
+                                                          "runs": .array([.object(["cost_usd_micros": .number(3_000_000)]), .object(["cost_usd_micros": .number(750_000)]),
+                                                                          .object(["cost_usd_micros": .null])])]),
+                                         "items": .array([.object(["name": .string("a"), "cost_usd_micros": .number(1_500_000)]),
+                                                          .object(["name": .string("b"), "cost_usd_micros": .null])])])
+        let ticket = try #require(ForkDevLogTicket.parse(content: content))
+        #expect(ticket.cost?.totalUSD == 12.34)
+        #expect(ticket.cost?.runs?.map(\.costUSD) == [3, 0.75, nil])
+        #expect(ticket.items?.map(\.costUSD) == [1.5, nil])
+        let total = try #require(ticket.cost?.totalUSD)
+        #expect(ForkDevLogFormat.usd(total, estimate: true) == "$12.34 est.")
+    }
+
+    @Test
+    func microsWinOverLegacyDollars() throws {
+        let content: ForkJSON = .object(["v": .number(1), "id": .string("x"), "title": .string("t"), "stage": .string("building"),
+                                         "cost": .object(["total_usd_micros": .number(4_210_000), "total_usd": .string("99.99"),
+                                                          "runs": .array([.object(["cost_usd_micros": .number(4_210_000), "cost_usd": .number(7)])])]),
+                                         "items": .array([.object(["name": .string("a"), "cost_usd_micros": .number(10_000), "cost_usd": .string("5")])])])
+        let ticket = try #require(ForkDevLogTicket.parse(content: content))
+        #expect(ticket.cost?.totalUSD == 4.21)
+        #expect(ticket.cost?.runs?.first?.costUSD == 4.21)
+        #expect(ticket.items?.first?.costUSD == 0.01)
+    }
+
+    /// A rev 3 ticket (no micros, numeric dollars) still shows its dollars; a non-integer micros value falls back too.
+    @Test
+    func legacyDollarsStillDecode() throws {
+        let content: ForkJSON = .object(["v": .number(1), "id": .string("x"), "title": .string("t"), "stage": .string("building"),
+                                         "cost": .object(["total_usd": .number(12), "runs": .array([.object(["cost_usd_micros": .string("lots"), "cost_usd": .string("0.5")])])]),
+                                         "items": .array([.object(["name": .string("a"), "cost_usd": .number(2)])])])
+        let ticket = try #require(ForkDevLogTicket.parse(content: content))
+        #expect(ticket.cost?.totalUSD == 12)
+        #expect(ticket.cost?.runs?.first?.costUSD == 0.5)
+        #expect(ticket.items?.first?.costUSD == 2)
+    }
+
     @Test
     func minimalTicketDecodesWithoutOptionalFields() throws {
         let ticket = try #require(ForkDevLogTicket.parse(content: .object(["v": .number(1), "id": .string("mx_1"), "title": .string("t"), "stage": .string("queued")])))
@@ -341,6 +382,41 @@ struct ForkArtifactSHATests {
         try Data("<html>evil</html>".utf8).write(to: cache.htmlURL(aid: "probe", version: 1, sha256: sha))
         #expect(cache.read(aid: "probe", version: 1, sha256: sha) == nil)
         #expect(!FileManager.default.fileExists(atPath: cache.htmlURL(aid: "probe", version: 1, sha256: sha).path()))
+    }
+
+    /// L6 (b): the hash becomes part of a cache path, so anything but 64 lowercase hex digits refuses the whole entry.
+    @Test
+    func malformedSHARefusesTheEntry() {
+        #expect(ForkArtifactSHA.isValidHex(ForkArtifactFixtures.sha256))
+        for bad in ["../../../../Library/Preferences/x", "9f2ce1", String(repeating: "g", count: 64), String(repeating: "a", count: 65),
+                    String(repeating: "a", count: 62) + "/.", ""] {
+            #expect(!ForkArtifactSHA.isValidHex(bad))
+            var content = ForkArtifactFixtures.html
+            content["sha256"] = .string(bad)
+            #expect(ForkArtifactEntry.parse(aid: "lumen-drift", sender: ForkArtifactFixtures.bot, content: .object(content)) == nil)
+        }
+        var upper = ForkArtifactFixtures.html
+        upper["sha256"] = .string(ForkArtifactFixtures.sha256.uppercased())
+        #expect(ForkArtifactEntry.parse(aid: "lumen-drift", sender: ForkArtifactFixtures.bot, content: .object(upper))?.sha256 == ForkArtifactFixtures.sha256)
+        var absent = ForkArtifactFixtures.html
+        absent["sha256"] = nil
+        #expect(ForkArtifactEntry.parse(aid: "lumen-drift", sender: ForkArtifactFixtures.bot, content: .object(absent))?.sha256 == nil)
+    }
+
+    /// Defense in depth: the cache itself never builds a path from an unsafe aid or hash, so nothing outside it is read or deleted.
+    @Test
+    func cacheRefusesUnsafeKeys() throws {
+        let base = FileManager.default.temporaryDirectory.appending(path: "TJArtifactsSHATests-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: base) }
+        let cache = ForkArtifactCache(userID: "@a:b", roomID: "!r:b", base: base)
+        let victim = base.appending(path: "victim.html")
+        try FileManager.default.createDirectory(at: base, withIntermediateDirectories: true)
+        try Data("keep me".utf8).write(to: victim)
+        let escape = "../../../victim"
+        #expect(cache.read(aid: "probe", version: 1, sha256: escape) == nil)
+        #expect(cache.read(aid: "../..", version: 1, sha256: ForkArtifactFixtures.sha256) == nil)
+        #expect(throws: (any Error).self) { try cache.write(Data("x".utf8), aid: "probe", version: 1, sha256: escape) }
+        #expect(FileManager.default.fileExists(atPath: victim.path()))
     }
 
     @Test

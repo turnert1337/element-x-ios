@@ -5,7 +5,8 @@
 // Spec: WatchLab/Element/03_ARTIFACTS_SPEC.md rev 3, D4, §5.1 ("401 handling"), §5.4 ("Token").
 // - The access token and homeserver URL are read fresh from upstream's session keychain on every call (read only:
 //   never a setter, never the refresh token). They are never stored beyond the call, logged or handed to a web view.
-// - Requests go only to the session's own homeserver host (pinned on the first read); anything else is refused.
+// - Requests go only to the session's own homeserver host (pinned on the first read); anything else is refused, redirects
+//   included (`ForkRedirectGuard`), so the Bearer header never follows a 3xx to another host.
 // - Writes: `sendMessage` (the §3.3 request in unencrypted rooms) and `join` (Dev Log invite). Nothing else.
 //
 
@@ -54,7 +55,7 @@ actor ForkMatrixREST {
         configuration.httpShouldSetCookies = false
         configuration.timeoutIntervalForRequest = 20
         configuration.timeoutIntervalForResource = 120
-        session = URLSession(configuration: configuration)
+        session = URLSession(configuration: configuration, delegate: ForkRedirectGuard(), delegateQueue: nil)
     }
 
     /// Upstream's session keychain, read only (`KeychainController(service: .sessions, …)`).
@@ -183,5 +184,22 @@ actor ForkMatrixREST {
     /// Plain http only for a localhost homeserver (developer harness); the operator's server is https.
     private static func allowsHTTP(_ url: URL) -> Bool {
         url.scheme == "http" && (url.host() == "localhost" || url.host() == "127.0.0.1")
+    }
+}
+
+/// Follows a redirect only to the same host and never from https down to http; otherwise the 3xx itself comes back
+/// (and `perform` reports it as `.http`), because URLSession would carry the Authorization header to the new URL.
+nonisolated final class ForkRedirectGuard: NSObject, URLSessionTaskDelegate, Sendable {
+    static func allows(from source: URL?, to target: URL?) -> Bool {
+        guard let sourceHost = source?.host()?.lowercased(), let targetHost = target?.host()?.lowercased(), sourceHost == targetHost else {
+            return false
+        }
+        return target?.scheme == source?.scheme || target?.scheme == "https"
+    }
+
+    // The completion-handler form: the async form crashes the Xcode 27.1 compiler in SILGen (NonisolatedNonsendingByDefault).
+    func urlSession(_ session: URLSession, task: URLSessionTask, willPerformHTTPRedirection response: HTTPURLResponse,
+                    newRequest request: URLRequest, completionHandler: @escaping @Sendable (URLRequest?) -> Void) {
+        completionHandler(Self.allows(from: task.originalRequest?.url, to: request.url) ? request : nil)
     }
 }

@@ -255,6 +255,9 @@ nonisolated struct ForkArtifactEntry: Equatable, Sendable, Identifiable {
               let order = content["order"]?.int else {
             return nil
         }
+        let sha256 = content["sha256"]?.string?.lowercased()
+        // A malformed hash is refused outright: it becomes part of a cache path (`../` would escape the cache folder).
+        if let sha256, !ForkArtifactSHA.isValidHex(sha256) { return nil }
         let derivedPipe: ForkArtifactPipe = kind == ForkArtifactKind.native.rawValue ? .xcode : .nas
         return ForkArtifactEntry(aid: aid,
                                  sender: sender,
@@ -264,7 +267,7 @@ nonisolated struct ForkArtifactEntry: Equatable, Sendable, Identifiable {
                                  kind: kind,
                                  url: content["url"]?.string,
                                  size: content["size"]?.int,
-                                 sha256: content["sha256"]?.string?.lowercased(),
+                                 sha256: sha256,
                                  version: version,
                                  order: order,
                                  updatedTS: content["updated_ts"]?.int ?? 0,
@@ -535,6 +538,13 @@ nonisolated enum ForkArtifactSHA {
         hex(Data(string.utf8))
     }
 
+    private static let lowercaseHexDigits = Set("0123456789abcdef".utf8)
+
+    /// §3.2: exactly 64 lowercase hex digits.
+    static func isValidHex(_ value: String) -> Bool {
+        value.utf8.count == 64 && value.utf8.allSatisfy(lowercaseHexDigits.contains)
+    }
+
     static func matches(_ data: Data, expected: String?) -> Bool {
         guard let expected, !expected.isEmpty else { return false }
         return hex(data) == expected.lowercased()
@@ -548,8 +558,9 @@ nonisolated enum ForkArtifactSHA {
 
 // MARK: - Dev log tickets (§3.4)
 
-/// Matrix forbids floats in event JSON (canonical JSON: Synapse answers M_BAD_JSON "float"), so dollar amounts may arrive as
-/// integers, numeric strings or (from older writers) numbers; decode all three, and never fail the whole ticket over one.
+/// Matrix forbids floats in event JSON (canonical JSON: Synapse answers M_BAD_JSON "float"). rev 3.1 writers send integer
+/// micro-USD; the retired dollar fields may still arrive as integers, numeric strings or numbers, so decode all three, and
+/// never fail the whole ticket over one.
 nonisolated struct ForkLenientDouble: Decodable, Equatable, Sendable {
     let value: Double?
 
@@ -568,6 +579,12 @@ nonisolated struct ForkLenientDouble: Decodable, Equatable, Sendable {
 extension KeyedDecodingContainer {
     nonisolated func decodeLenientDouble(forKey key: Key) -> Double? {
         (try? decodeIfPresent(ForkLenientDouble.self, forKey: key))?.value
+    }
+
+    /// Dollars from §3.4 rev 3.1 integer micro-USD when present, else from the retired dollar field.
+    nonisolated func decodeUSD(micros: Key, legacy: Key) -> Double? {
+        if let value = try? decodeIfPresent(Int.self, forKey: micros) { return Double(value) / 1_000_000 }
+        return decodeLenientDouble(forKey: legacy)
     }
 }
 
@@ -648,6 +665,7 @@ nonisolated struct ForkDevLogTicket: Decodable, Equatable, Sendable, Identifiabl
         enum CodingKeys: String, CodingKey {
             case name, type, feature, status, note, validation
             case costUSD = "cost_usd"
+            case costUSDMicros = "cost_usd_micros"
         }
 
         init(from decoder: Decoder) throws {
@@ -658,7 +676,7 @@ nonisolated struct ForkDevLogTicket: Decodable, Equatable, Sendable, Identifiabl
             status = try? c.decodeIfPresent(String.self, forKey: .status)
             note = try? c.decodeIfPresent(String.self, forKey: .note)
             validation = try? c.decodeIfPresent(String.self, forKey: .validation)
-            costUSD = c.decodeLenientDouble(forKey: .costUSD)
+            costUSD = c.decodeUSD(micros: .costUSDMicros, legacy: .costUSD)
         }
     }
 
@@ -711,6 +729,7 @@ nonisolated struct ForkDevLogTicket: Decodable, Equatable, Sendable, Identifiabl
             case cacheRead = "cache_read"
             case cacheWrite = "cache_write"
             case costUSD = "cost_usd"
+            case costUSDMicros = "cost_usd_micros"
             case durationMS = "duration_ms"
         }
 
@@ -723,7 +742,7 @@ nonisolated struct ForkDevLogTicket: Decodable, Equatable, Sendable, Identifiabl
             output = try? c.decodeIfPresent(Int.self, forKey: .output)
             cacheRead = try? c.decodeIfPresent(Int.self, forKey: .cacheRead)
             cacheWrite = try? c.decodeIfPresent(Int.self, forKey: .cacheWrite)
-            costUSD = c.decodeLenientDouble(forKey: .costUSD)
+            costUSD = c.decodeUSD(micros: .costUSDMicros, legacy: .costUSD)
             durationMS = try? c.decodeIfPresent(Int.self, forKey: .durationMS)
             source = try? c.decodeIfPresent(String.self, forKey: .source)
         }
@@ -750,6 +769,7 @@ nonisolated struct ForkDevLogTicket: Decodable, Equatable, Sendable, Identifiabl
         enum CodingKeys: String, CodingKey {
             case basis, coverage, tokens, runs
             case totalUSD = "total_usd"
+            case totalUSDMicros = "total_usd_micros"
             case totalIsEstimate = "total_is_estimate"
             case coverageNote = "coverage_note"
         }
@@ -757,7 +777,7 @@ nonisolated struct ForkDevLogTicket: Decodable, Equatable, Sendable, Identifiabl
         init(from decoder: Decoder) throws {
             let c = try decoder.container(keyedBy: CodingKeys.self)
             basis = try? c.decodeIfPresent(String.self, forKey: .basis)
-            totalUSD = c.decodeLenientDouble(forKey: .totalUSD)
+            totalUSD = c.decodeUSD(micros: .totalUSDMicros, legacy: .totalUSD)
             totalIsEstimate = try? c.decodeIfPresent(Bool.self, forKey: .totalIsEstimate)
             coverage = try? c.decodeIfPresent(String.self, forKey: .coverage)
             coverageNote = try? c.decodeIfPresent(String.self, forKey: .coverageNote)

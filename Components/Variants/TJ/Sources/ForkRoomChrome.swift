@@ -382,7 +382,7 @@ struct ForkRoomChromeView: View {
             ForkWindowMetricsReader { size, scene in coordinator.windowChanged(size: size, scene: scene) }
                 .frame(width: 0, height: 0)
                 .accessibilityHidden(true)
-            ForkToolbarEdgeProbe(state: state)
+            ForkToolbarEdgeProbe { state.hasVerticalBar = $0 }
         }
         .onAppear { coordinator.viewAppeared(sizeClass: sizeClass) }
         .onChange(of: sizeClass) { _, newValue in coordinator.sizeClassChanged(newValue) }
@@ -395,14 +395,14 @@ struct ForkRoomChromeView: View {
     }
 }
 
-/// Reads `toolbarVerticalEdge` on iOS 27.1+ (nothing before).
+/// Reads `toolbarVerticalEdge` on iOS 27.1+ and reports whether the bar is vertical (nothing before: always horizontal).
 struct ForkToolbarEdgeProbe: View {
-    let state: ForkRoomChromeState
+    let onChange: (Bool) -> Void
 
     var body: some View {
         #if TJ_SDK27
         if #available(iOS 27.1, *) {
-            ForkToolbarEdgeReader27(state: state)
+            ForkToolbarEdgeReader27(onChange: onChange)
         }
         #endif
     }
@@ -411,14 +411,14 @@ struct ForkToolbarEdgeProbe: View {
 #if TJ_SDK27
 @available(iOS 27.1, *)
 private struct ForkToolbarEdgeReader27: View {
-    let state: ForkRoomChromeState
+    let onChange: (Bool) -> Void
     @Environment(\.toolbarVerticalEdge) private var edge
 
     var body: some View {
         Color.clear
             .frame(width: 0, height: 0)
-            .onAppear { state.hasVerticalBar = edge != nil }
-            .onChange(of: edge) { _, newValue in state.hasVerticalBar = newValue != nil }
+            .onAppear { onChange(edge != nil) }
+            .onChange(of: edge) { _, newValue in onChange(newValue != nil) }
             .accessibilityHidden(true)
     }
 }
