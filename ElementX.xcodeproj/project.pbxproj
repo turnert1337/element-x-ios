@@ -295,6 +295,7 @@
 		2BBE320EE426A347AAE5C7DA /* IdentityConfirmationScreen.swift in Sources */ = {isa = PBXBuildFile; fileRef = 00AFC5F08734C2EA4EE79C59 /* IdentityConfirmationScreen.swift */; };
 		2BC579CB5CE90CFE07CA0955 /* EditRoomAddressScreenCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = 41656BC6267D55C56A2AAC08 /* EditRoomAddressScreenCoordinator.swift */; };
 		2BEFF20BDED05EF5772D7B5E /* ForkDuoBackScreen27.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6CFD7B84D61EF8A9F63055D4 /* ForkDuoBackScreen27.swift */; };
+		2BF2DDDA6608B02BDAE4B740 /* ForkDuoRulesTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = DFCAD82DFD856D4E7AAF8CFD /* ForkDuoRulesTests.swift */; };
 		2BFA4C6D5B3D327B02C66AB0 /* TimelineController.swift in Sources */ = {isa = PBXBuildFile; fileRef = A4216C12C0369A8AB059EDE9 /* TimelineController.swift */; };
 		2C1C4D29EE0E5EF80BAEE390 /* OAuthAccountSettingsPresenterHook.swift in Sources */ = {isa = PBXBuildFile; fileRef = 13A1CFE12BDB1D02BEDFFF6D /* OAuthAccountSettingsPresenterHook.swift */; };
 		2C289BECCCBEDBA48DC9AC67 /* ClassicAppMXAccount.swift in Sources */ = {isa = PBXBuildFile; fileRef = 74240BE69DACAD01AA670730 /* ClassicAppMXAccount.swift */; };
@@ -709,6 +710,7 @@
 		6B8F03A85E83755D98DF0443 /* SearchScreenViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1C4724D5CB16CFA5853EF8F9 /* SearchScreenViewModel.swift */; };
 		6BA9214F31A24C7A84287A56 /* SentryEvent.swift in Sources */ = {isa = PBXBuildFile; fileRef = 337AD37403015231CAE3E80B /* SentryEvent.swift */; };
 		6BAE34CFA9821709CFE61E50 /* DeveloperOptionsScreenHook.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0F60FDB3AEFC60830BD289FE /* DeveloperOptionsScreenHook.swift */; };
+		6C1629DF57FC0BB2911DDB67 /* ForkDuoRules.swift in Sources */ = {isa = PBXBuildFile; fileRef = B4D00120F3FAB8CF701034AB /* ForkDuoRules.swift */; };
 		6C34237AFB808E38FC8776B9 /* RoomStateEventStringBuilder.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8D55702474F279D910D2D162 /* RoomStateEventStringBuilder.swift */; };
 		6C8BAF1E91618D69E7D652B2 /* NotificationServiceExtension.swift in Sources */ = {isa = PBXBuildFile; fileRef = 27A1AD6389A4659AF0CEAE62 /* NotificationServiceExtension.swift */; };
 		6C98153D60FF9B648C166C27 /* TimelineItemMenu.swift in Sources */ = {isa = PBXBuildFile; fileRef = 91FFE1F410969ECB23FE9BB2 /* TimelineItemMenu.swift */; };
@@ -2936,6 +2938,7 @@
 		B43456E73F8A2D52B69B9FB9 /* TemplateScreenViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TemplateScreenViewModel.swift; sourceTree = "<group>"; };
 		B4AE42C19EDE64B7CB7BE4D0 /* SecurityAndPrivacyScreen.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SecurityAndPrivacyScreen.swift; sourceTree = "<group>"; };
 		B4CFE236419E830E8946639C /* Analytics+SwiftUI.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Analytics+SwiftUI.swift"; sourceTree = "<group>"; };
+		B4D00120F3FAB8CF701034AB /* ForkDuoRules.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ForkDuoRules.swift; sourceTree = "<group>"; };
 		B4ED859C6363DAB2E8CFF2CE /* NSItemProviderTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NSItemProviderTests.swift; sourceTree = "<group>"; };
 		B50642DAE43672897C0BBAE2 /* MapLibreAnnotation.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MapLibreAnnotation.swift; sourceTree = "<group>"; };
 		B50F03079F6B5EF9CA005F14 /* TimelineProxyProtocol.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TimelineProxyProtocol.swift; sourceTree = "<group>"; };
@@ -3198,6 +3201,7 @@
 		DF05DA24F71B455E8EFEBC3B /* SessionVerificationViewModelTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SessionVerificationViewModelTests.swift; sourceTree = "<group>"; };
 		DF17EA323AD0205A6AB621AA /* Snapshotting.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Snapshotting.swift; sourceTree = "<group>"; };
 		DF3D25B3EDB283B5807EADCF /* ReadMarkerRoomTimelineItem.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReadMarkerRoomTimelineItem.swift; sourceTree = "<group>"; };
+		DFCAD82DFD856D4E7AAF8CFD /* ForkDuoRulesTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ForkDuoRulesTests.swift; sourceTree = "<group>"; };
 		DFFB0E7C6D8E190AFA0176DC /* uz */ = {isa = PBXFileReference; lastKnownFileType = text.plist.stringsdict; name = uz; path = uz.lproj/Localizable.stringsdict; sourceTree = "<group>"; };
 		E06AAD6D9D3F5833E7A5A2F9 /* RoomListFilterModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RoomListFilterModels.swift; sourceTree = "<group>"; };
 		E0FCA0957FAA0E15A9F5579D /* en */ = {isa = PBXFileReference; lastKnownFileType = text.plist.stringsdict; name = en; path = en.lproj/Untranslated.stringsdict; sourceTree = "<group>"; };
@@ -3634,6 +3638,7 @@
 			isa = PBXGroup;
 			children = (
 				EC6B274B686FD55D4402427C /* ForkDuoBackScreenPolicyTests.swift */,
+				DFCAD82DFD856D4E7AAF8CFD /* ForkDuoRulesTests.swift */,
 			);
 			path = Tests;
 			sourceTree = "<group>";
@@ -3971,6 +3976,7 @@
 				D65A7EE25883AAADE36F38B8 /* ForkDuoBootstrap.m */,
 				D7F656B337A1777BF892F3F9 /* ForkDuoFold27.swift */,
 				EACAE2E7511DCCC0151D23B4 /* ForkDuoProbe.swift */,
+				B4D00120F3FAB8CF701034AB /* ForkDuoRules.swift */,
 				1EE739908CC624646433F29E /* ForkDuoRuntime.swift */,
 				F05B0842D46A6B2FE4430415 /* ForkDuoSettings.swift */,
 				241171F0029A06ED900B9496 /* ForkDuoSimDriver.swift */,
@@ -8639,6 +8645,7 @@
 				25618589E0DE0F1E95FC7B5C /* EmojiProviderTests.swift in Sources */,
 				71B62C48B8079D49F3FBC845 /* ExpiringTaskRunnerTests.swift in Sources */,
 				B44C241642EC35F1248D5BD1 /* ForkDuoBackScreenPolicyTests.swift in Sources */,
+				2BF2DDDA6608B02BDAE4B740 /* ForkDuoRulesTests.swift in Sources */,
 				07756D532EFE33DD1FA258E5 /* GeoURITests.swift in Sources */,
 				6817EAD73DC1FFD8B943B5B9 /* HomeScreenRoomTests.swift in Sources */,
 				F6F49E37272AD7397CD29A01 /* HomeScreenViewModelTests.swift in Sources */,
@@ -9184,6 +9191,7 @@
 				968315670341FA4F26A811D2 /* ForkDuoBootstrap.m in Sources */,
 				F86848184DE9FEBF3574CF0F /* ForkDuoFold27.swift in Sources */,
 				37BA17AEB500D8200537C914 /* ForkDuoProbe.swift in Sources */,
+				6C1629DF57FC0BB2911DDB67 /* ForkDuoRules.swift in Sources */,
 				1F222EF76BB602E85AD06A76 /* ForkDuoRuntime.swift in Sources */,
 				7264055C120726443259CCFB /* ForkDuoSettings.swift in Sources */,
 				86ED905CDD0E72D18057D4F1 /* ForkDuoSimDriver.swift in Sources */,
@@ -10536,9 +10544,9 @@
 				PRODUCT_BUNDLE_IDENTIFIER = "$(BASE_BUNDLE_IDENTIFIER)";
 				PRODUCT_NAME = "$(APP_NAME)";
 				SDKROOT = iphoneos;
-				SWIFT_ACTIVE_COMPILATION_CONDITIONS = "$(inherited) TJ_DUO_BACKSCREEN";
-				"SWIFT_ACTIVE_COMPILATION_CONDITIONS[sdk=iphoneos27*]" = "$(inherited) TJ_DUO_BACKSCREEN TJ_SDK27";
-				"SWIFT_ACTIVE_COMPILATION_CONDITIONS[sdk=iphonesimulator27*]" = "$(inherited) TJ_DUO_BACKSCREEN TJ_SDK27";
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = "$(inherited) TJ_DUO_PROBE TJ_DUO_BACKSCREEN";
+				"SWIFT_ACTIVE_COMPILATION_CONDITIONS[sdk=iphoneos27*]" = "$(inherited) TJ_DUO_PROBE TJ_DUO_BACKSCREEN TJ_SDK27";
+				"SWIFT_ACTIVE_COMPILATION_CONDITIONS[sdk=iphonesimulator27*]" = "$(inherited) TJ_DUO_PROBE TJ_DUO_BACKSCREEN TJ_SDK27";
 				SWIFT_APPROACHABLE_CONCURRENCY = YES;
 				SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor;
 				SWIFT_OBJC_BRIDGING_HEADER = "ElementX/SupportingFiles/ElementX-Bridging-Header.h";

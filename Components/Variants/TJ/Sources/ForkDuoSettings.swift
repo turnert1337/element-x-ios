@@ -32,8 +32,19 @@ nonisolated enum ForkDuoSettings {
     }
 
     static var probeEnabled: Bool {
-        UserDefaults.standard.object(forKey: Key.probe) as? Bool ?? true
+        UserDefaults.standard.object(forKey: Key.probe) as? Bool ?? defaultProbeEnabled
     }
+
+    /// Steward decision D1 (01_DUO_SPEC.md rev 3): the probe is compiled into every config (TestFlight included) but its
+    /// pill and log lines are OFF by default in Release and on by default in Debug. In Release it is switched on from
+    /// Settings > tap the version footer 7 times > Developer options > "Duo probe" (signed in; SettingsScreen.swift).
+    static let defaultProbeEnabled: Bool = {
+        #if DEBUG
+        true
+        #else
+        false
+        #endif
+    }()
 
     /// iOS 27.1 fold assist (ForkDuoFold27.swift): keyboard continuity across a fold, sheets kept off an upright fold.
     /// Off = observe and log only.
@@ -78,7 +89,7 @@ private nonisolated struct ForkDuoRowsHost: View {
 
 private struct ForkDuoRowsView: View {
     #if TJ_DUO_PROBE
-    @AppStorage(ForkDuoSettings.Key.probe) private var probeEnabled = true
+    @AppStorage(ForkDuoSettings.Key.probe) private var probeEnabled = ForkDuoSettings.defaultProbeEnabled
     #endif
     @AppStorage(ForkDuoSettings.Key.foldAssist) private var foldAssistEnabled = true
     @AppStorage(ForkDuoSettings.Key.backScreen) private var backScreenMode = ForkDuoSettings.defaultBackScreenMode.rawValue
@@ -90,11 +101,12 @@ private struct ForkDuoRowsView: View {
 
     var body: some View {
         #if TJ_DUO_PROBE
-        // The probe is compiled into Debug builds only (fork.yml), so the row exists only there.
+        // Compiled into every config (fork.yml); off by default in Release, on in Debug (D1).
         Toggle(isOn: $probeEnabled) {
             Text("Duo probe")
-            Text("Logs size class, layout and scenes (DuoProbe) and shows a 4 s pill after each change. Never content.")
+            Text("Logs size class, hinge, bars, fold regions and scenes (DuoProbe) and shows a 4 s pill after each change. Never content.")
         }
+        .accessibilityIdentifier("tj_duo-probe_toggle")
         #endif
 
         Toggle(isOn: $foldAssistEnabled) {

@@ -4,7 +4,8 @@
 //
 // NOT COMPILED ON XCODE 26.6. `TJ_SDK27` is only set when building against an iOS 27.x SDK (fork.yml), and every
 // type here is `@available(iOS 27.1, *)`, so the app still runs on older iOS (deployment target 18.5).
-// Spec: WatchLab/Element/01_DUO_SPEC.md rev 2 §5.3 (register, attach paths A and B, availability), §7 (APIs).
+// Spec: WatchLab/Element/01_DUO_SPEC.md rev 2 §5.3 (register, attach paths A and B, availability), §7 (APIs),
+// rev 3 D4 (attach guard: TJ userInfo only, never while Off, path B only with a live registration; ForkDuoRules.swift).
 // Symbols verified in iPhoneOS27.1.sdk (research/duo/07_g1_sdk_audit.md).
 //
 // Privacy: the card takes no identity input (ForkDuoBackScreenCard), the accessory is only registered while
@@ -14,6 +15,7 @@
 
 #if IS_MAIN_APP && TJ_DUO_BACKSCREEN && TJ_SDK27
 
+import ObjectiveC
 import SwiftUI
 
 extension ForkDuoRuntime {
@@ -33,7 +35,7 @@ final class ForkDuoCameraCaptureAccessoryPresenter: ForkDuoAccessoryPresenter {
     /// Not an Info.plist name: `UISceneConfiguration(name:)` (iOS 27.0) lets the system assign the accessory role.
     static let configurationName = "TJDuoBackScreen"
     /// Comes back as `UIScene.ConnectionOptions.sceneAccessoryUserInfo` (UISceneOptions.h:49-52).
-    static let userInfo = "tj.duo.card"
+    static let userInfo = ForkDuoAccessoryAttachGuard.userInfo
 
     private var registration: UISceneAccessoryRegistration?
     private weak var registeringRoot: UIViewController?
@@ -46,19 +48,11 @@ final class ForkDuoCameraCaptureAccessoryPresenter: ForkDuoAccessoryPresenter {
     }
 
     init() {
-        // Attach path B (zero upstream edits): AppDelegate returns SceneDelegate for every role
-        // (AppDelegate.swift:21-26), which may replace our delegate class, so also observe the connection itself.
-        // The notification carries no connection options; the role is enough because nothing else in the app
-        // registers a camera-capture accessory.
-        observers.append(NotificationCenter.default.addObserver(forName: UIScene.willConnectNotification, object: nil, queue: .main) { note in
-            let scene = note.object as? UIWindowScene // MainActor class, so Sendable
-            MainActor.assumeIsolated {
-                guard let scene, scene.session.role == .windowCameraCaptureAccessory else { return }
-                ForkDuoBackScreenAccessoryAttach.attach(to: scene, path: "B")
-            }
-        })
+        // Detach on disconnect, whichever path attached. Attaching never happens from a notification: path B needs the
+        // connection options (sceneAccessoryUserInfo), which `UIScene.willConnectNotification` does not carry, so it
+        // runs from `ForkDuoSceneConnectTap` (installed at the first registration, never while the mode is Off).
         observers.append(NotificationCenter.default.addObserver(forName: UIScene.didDisconnectNotification, object: nil, queue: .main) { note in
-            let scene = note.object as? UIWindowScene
+            let scene = note.object as? UIWindowScene // MainActor class, so Sendable
             MainActor.assumeIsolated {
                 guard let scene else { return }
                 ForkDuoBackScreenAccessoryAttach.detach(from: scene)
@@ -90,9 +84,12 @@ final class ForkDuoCameraCaptureAccessoryPresenter: ForkDuoAccessoryPresenter {
         // the role "is assigned automatically… Clients do not set it directly", UIWindowScene.h:133-137).
         let configuration = UISceneConfiguration(name: Self.configurationName)
         configuration.delegateClass = ForkDuoBackScreenSceneDelegate.self
+        // Path B's tap goes in before the first registration can make the system connect an accessory scene.
+        ForkDuoSceneConnectTap.install()
         let registration = root.registerSceneAccessory(.cameraCapture(sceneConfiguration: configuration, userInfo: Self.userInfo))
         self.registration = registration
         registeringRoot = root
+        ForkDuoBackScreenAccessoryAttach.hasLiveRegistration = true
 
         // `isAvailable` has no notification; it is observable in layoutSubviews/updateProperties
         // (UISceneAccessoryRegistration.h:24), so sample it from a zero-size TJ view. It goes on the main window,
@@ -106,7 +103,10 @@ final class ForkDuoCameraCaptureAccessoryPresenter: ForkDuoAccessoryPresenter {
 
     private func unregister(_ registration: UISceneAccessoryRegistration) {
         // Dismisses the accessory if it is presented (UIViewController.h:368-370).
+        ForkDuoBackScreenAccessoryAttach.hasLiveRegistration = false
         (registeringRoot ?? SceneDelegate.windowManager?.mainWindow?.rootViewController)?.unregisterSceneAccessory(registration)
+        // Belt and braces: no TJ window outlives the registration, even if the system is slow to disconnect the scene.
+        ForkDuoBackScreenAccessoryAttach.detachAll(reason: "unregistered")
         availabilityView?.removeFromSuperview()
         availabilityView = nil
         self.registration = nil
@@ -171,9 +171,8 @@ final class ForkDuoBackScreenSceneDelegate: UIResponder, UIWindowSceneDelegate {
 
     func scene(_ scene: UIScene, willConnectTo session: UISceneSession, options connectionOptions: UIScene.ConnectionOptions) {
         guard let windowScene = scene as? UIWindowScene else { return }
-        let isTJ = connectionOptions.sceneAccessoryUserInfo as? String == ForkDuoCameraCaptureAccessoryPresenter.userInfo
-        ForkDuoBackScreen.logger.notice("DUO v=1 ev=backscreen scene-delegate tj=\(isTJ ? 1 : 0, privacy: .public)")
-        window = ForkDuoBackScreenAccessoryAttach.attach(to: windowScene, path: "A")
+        // D4: path A attaches only for TJ's own accessory (userInfo "tj.duo.card") and never while the mode is Off.
+        window = ForkDuoBackScreenAccessoryAttach.attachIfAllowed(to: windowScene, path: .a, userInfo: connectionOptions.sceneAccessoryUserInfo)
     }
 
     func sceneDidDisconnect(_ scene: UIScene) {
@@ -196,10 +195,25 @@ enum ForkDuoBackScreenAccessoryAttach {
     /// Which attach path ran last ("-" = none yet). Logged for G4-GUI / G4-device.
     private(set) static var lastPath = "-"
 
+    /// Set by `ForkDuoCameraCaptureAccessoryPresenter` while it holds a `UISceneAccessoryRegistration` (path B's guard).
+    static var hasLiveRegistration = false
+
     private static var windows: [ObjectIdentifier: UIWindow] = [:]
 
+    /// Every attach goes through the D4 guard (`ForkDuoAccessoryAttachGuard`). Returns nil, and creates nothing, when the
+    /// guard refuses: not TJ's userInfo, mode Off, or (path B) no live registration.
     @discardableResult
-    static func attach(to scene: UIWindowScene, path: String) -> UIWindow {
+    static func attachIfAllowed(to scene: UIWindowScene, path: ForkDuoAccessoryAttachGuard.Path, userInfo: Any?) -> UIWindow? {
+        let mode = ForkDuoSettings.backScreenMode
+        let isTJ = userInfo as? String == ForkDuoAccessoryAttachGuard.userInfo
+        guard ForkDuoAccessoryAttachGuard.shouldAttach(path: path, userInfo: userInfo, mode: mode, hasLiveRegistration: hasLiveRegistration) else {
+            ForkDuoBackScreen.logger.notice("DUO v=1 ev=backscreen attach-refused path=\(path.rawValue, privacy: .public) tj=\(isTJ ? 1 : 0, privacy: .public) mode=\(mode.rawValue, privacy: .public) reg=\(hasLiveRegistration ? 1 : 0, privacy: .public)")
+            return nil
+        }
+        return attach(to: scene, path: path.rawValue)
+    }
+
+    private static func attach(to scene: UIWindowScene, path: String) -> UIWindow {
         let key = ObjectIdentifier(scene)
         if let existing = windows[key] {
             ForkDuoBackScreen.logger.notice("DUO v=1 ev=backscreen attach-skip path=\(path, privacy: .public)")
@@ -223,6 +237,15 @@ enum ForkDuoBackScreenAccessoryAttach {
         ForkDuoBackScreen.logger.notice("DUO v=1 ev=backscreen detached")
     }
 
+    static func detachAll(reason: String) {
+        guard !windows.isEmpty else { return }
+        for window in windows.values {
+            window.isHidden = true
+        }
+        windows.removeAll()
+        ForkDuoBackScreen.logger.notice("DUO v=1 ev=backscreen detached-all reason=\(reason, privacy: .public)")
+    }
+
     private static func refresh() {
         for window in windows.values {
             (window.rootViewController as? UIHostingController<ForkDuoBackScreenCard>)?.rootView = card()
@@ -231,6 +254,40 @@ enum ForkDuoBackScreenAccessoryAttach {
 
     private static func card() -> ForkDuoBackScreenCard {
         ForkDuoBackScreenCard(status: status)
+    }
+}
+
+/// Attach path B (zero upstream file edits). AppDelegate returns upstream's `SceneDelegate` for every role
+/// (AppDelegate.swift:21-26), which may replace the TJ configuration's delegate, and `UIScene.willConnectNotification`
+/// carries no connection options. So this wraps `SceneDelegate.scene(_:willConnectTo:options:)` at runtime: upstream's
+/// implementation always runs first and unchanged, then, for camera-capture-accessory sessions only, TJ reads
+/// `sceneAccessoryUserInfo` and asks the D4 guard. Main scenes return straight after upstream's code.
+/// Installed once, at the first registration, so with the mode Off (the v2 default) upstream's method is never wrapped.
+@available(iOS 27.1, *)
+enum ForkDuoSceneConnectTap {
+    private static var isInstalled = false
+
+    private typealias WillConnect = @convention(c) (AnyObject, Selector, UIScene, UISceneSession, UIScene.ConnectionOptions) -> Void
+
+    static func install() {
+        guard !isInstalled else { return }
+        isInstalled = true
+        let selector = #selector(UISceneDelegate.scene(_:willConnectTo:options:))
+        guard let method = class_getInstanceMethod(SceneDelegate.self, selector) else {
+            ForkDuoBackScreen.logger.error("DUO v=1 ev=backscreen tap-failed reason=no-method")
+            return
+        }
+        let original = unsafeBitCast(method_getImplementation(method), to: WillConnect.self)
+        let wrapper: @convention(block) (AnyObject, UIScene, UISceneSession, UIScene.ConnectionOptions) -> Void = { delegate, scene, session, options in
+            original(delegate, selector, scene, session, options)
+            guard session.role == .windowCameraCaptureAccessory, let windowScene = scene as? UIWindowScene else { return }
+            let userInfo = options.sceneAccessoryUserInfo
+            MainActor.assumeIsolated {
+                _ = ForkDuoBackScreenAccessoryAttach.attachIfAllowed(to: windowScene, path: .b, userInfo: userInfo)
+            }
+        }
+        method_setImplementation(method, imp_implementationWithBlock(wrapper))
+        ForkDuoBackScreen.logger.notice("DUO v=1 ev=backscreen tap-installed")
     }
 }
 

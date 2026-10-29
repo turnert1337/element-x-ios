@@ -37,21 +37,17 @@ targets:
       # iOS 27.x SDK, so 27.1-only code (`#if TJ_SDK27`) is never compiled by Xcode 26.6.
       # TJ_DUO_BACKSCREEN: every config (Release included). The card ships dark: its runtime mode defaults to Off
       #   and nothing registers while Off (spec §4.1 item 3, §6.1, ForkDuoSettings.defaultBackScreenMode).
-      # TJ_DUO_PROBE: Debug only, never Release (integration validator, 2026-10-29). NOTE: spec rev 2 §4.1 item 2 /
-      #   §5.4 / §9.5 assumes the probe in TestFlight; to run the §9.5 device pass, re-add it to Release on purpose.
+      # TJ_DUO_PROBE: every config, Release/TestFlight included (steward decision D1, spec rev 3, 2026-10-29). The pill
+      #   and log lines are OFF by default in Release and on by default in Debug (ForkDuoSettings.defaultProbeEnabled);
+      #   in Release the operator turns it on in Settings > tap the version 7x > Developer options > "Duo probe".
       base:
-        SWIFT_ACTIVE_COMPILATION_CONDITIONS: "$(inherited) TJ_DUO_BACKSCREEN"
-        "SWIFT_ACTIVE_COMPILATION_CONDITIONS[sdk=iphoneos27*]": "$(inherited) TJ_DUO_BACKSCREEN TJ_SDK27"
-        "SWIFT_ACTIVE_COMPILATION_CONDITIONS[sdk=iphonesimulator27*]": "$(inherited) TJ_DUO_BACKSCREEN TJ_SDK27"
-      configs:
-        Debug:
-          SWIFT_ACTIVE_COMPILATION_CONDITIONS: "$(inherited) TJ_DUO_PROBE TJ_DUO_BACKSCREEN"
-          "SWIFT_ACTIVE_COMPILATION_CONDITIONS[sdk=iphoneos27*]": "$(inherited) TJ_DUO_PROBE TJ_DUO_BACKSCREEN TJ_SDK27"
-          "SWIFT_ACTIVE_COMPILATION_CONDITIONS[sdk=iphonesimulator27*]": "$(inherited) TJ_DUO_PROBE TJ_DUO_BACKSCREEN TJ_SDK27"
+        SWIFT_ACTIVE_COMPILATION_CONDITIONS: "$(inherited) TJ_DUO_PROBE TJ_DUO_BACKSCREEN"
+        "SWIFT_ACTIVE_COMPILATION_CONDITIONS[sdk=iphoneos27*]": "$(inherited) TJ_DUO_PROBE TJ_DUO_BACKSCREEN TJ_SDK27"
+        "SWIFT_ACTIVE_COMPILATION_CONDITIONS[sdk=iphonesimulator27*]": "$(inherited) TJ_DUO_PROBE TJ_DUO_BACKSCREEN TJ_SDK27"
 
   UnitTests:
     sources:
-    - path: Tests                       # → Components/Variants/TJ/Tests (ForkDuoBackScreenPolicyTests.swift)
+    - path: Tests                       # → Components/Variants/TJ/Tests (back-screen policy, D3 fold rules, D4 attach guard, D1 probe default)
 
   NSE:
     entitlements:
@@ -74,6 +70,12 @@ targets:
 # (-configuration Release -destination generic/platform=iOS, -O) on Xcode 27.1 compiles that init cleanly without it
 # (WatchLab/Element/build/v2_duo.txt), so the file is byte-identical to upstream again. If the workshop ever builds
 # Release on 26.6 again, the crash returns: re-add the attribute or build on 27.1.
+# Steward decision D2 (spec rev 3): G5 stays removed in v2; the Ship lane's real Release ARCHIVE is the proof. If that
+# archive hits the old crash, the Ship lane restores `@_optimize(none)` on TimelineViewModel.init and re-archives.
+#
+# Runtime wrap, not a file edit (D4, ForkDuoBackScreen27.swift `ForkDuoSceneConnectTap`): the first back-screen
+# registration (mode not Off) wraps upstream `SceneDelegate.scene(_:willConnectTo:options:)` so attach path B can read
+# `sceneAccessoryUserInfo`. Upstream's implementation runs first, unchanged; never installed while the mode is Off.
 #
 # 1. ElementX/Sources/Mocks/JoinedRoomProxyMock.swift (init): `saveDraftThreadRootEventIDReturnValue = .success(())`,
 #    beside upstream's loadDraft/clearDraft lines. TEST FIXTURE ONLY, no product code path. The no-login fixture

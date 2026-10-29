@@ -17,9 +17,12 @@
 // 1. Keyboard continuity across a fold: if the composer had focus when the phone folded or unfolded, focus the
 //    same composer again once the stack/split swap settles (spec R2 lists "keyboard stays up" as allowed to fail in
 //    v2; this recovers it with zero edits). The draft text itself already survives in the coordinators (T2).
-// 2. Sheets off the fold: while a `.division` region is active (partially open), a sheet that the system left across
-//    an upright fold gets `preferredPlacement = .leading` (UISheetPresentationController.h:120, iOS 27.0), and goes
-//    back to `.automatic` when the fold flattens. Apple says the system already keeps sheets and alerts off the
+//    Steward decision D3 (spec rev 3): ONLY on a hinge-confirmed fold (a `UIHinge` exists before and after and it
+//    crossed closed <-> open; `ForkDuoFoldRules`). A horizontal size-class change on its own (iPad Split View
+//    resizing, Pro Max rotation, the sim driver's trait override) is logged and never re-focuses anything.
+// 2. Sheets off the fold: only while the hinge is `partiallyOpen` AND an active `.division` region stands upright,
+//    a sheet that the system left across the fold gets `preferredPlacement = .leading`
+//    (UISheetPresentationController.h:120, iOS 27.0), and goes back to `.automatic` when that stops being true. Apple says the system already keeps sheets and alerts off the
 //    division (HIG, [V-doc]); this only acts when a measured sheet frame still crosses it. Alerts have no placement
 //    API, so a crossing alert is only logged.
 // 3. Feeds the probe (Debug) with hinge status/angle, `verticalBarEdge` and the division/occlusion frames.
@@ -95,6 +98,8 @@ final class ForkDuoFoldMonitor {
     private var focusedComposer: ComposerIdentity?
     private var focusLost: (composer: ComposerIdentity, at: Date)?
     private var restoreTask: Task<Void, Never>?
+    /// When the hinge last confirmed a closed <-> open crossing (D3). nil = no hinge-confirmed fold pending.
+    private var lastHingeFold: Date?
 
     private var sheetGuardTask: Task<Void, Never>?
     private var placedSheets: [WeakSheet] = []
@@ -143,8 +148,10 @@ final class ForkDuoFoldMonitor {
         snapshot.hingeAngle = hinge?.angle ?? 0
         guard oldStatus != snapshot.hingeStatus else { return } // angle-only updates: not used (no hinge-driven layout)
 
-        Self.logger.notice("DUO v=1 ev=fold-hinge from=\(oldStatus.map(ForkDuoFoldSnapshot.name) ?? "nil", privacy: .public) to=\(self.snapshot.hingeStatus.map(ForkDuoFoldSnapshot.name) ?? "nil", privacy: .public)")
-        if oldStatus != nil, Self.isFoldTransition(from: oldStatus, to: snapshot.hingeStatus) {
+        let confirmed = ForkDuoFoldRules.isHingeConfirmedFold(from: Self.posture(oldStatus), to: Self.posture(snapshot.hingeStatus))
+        Self.logger.notice("DUO v=1 ev=fold-hinge from=\(oldStatus.map(ForkDuoFoldSnapshot.name) ?? "nil", privacy: .public) to=\(self.snapshot.hingeStatus.map(ForkDuoFoldSnapshot.name) ?? "nil", privacy: .public) fold=\(confirmed ? 1 : 0, privacy: .public)")
+        if confirmed {
+            lastHingeFold = .now
             foldTransitionStarted(reason: "hinge")
         }
         updateSheetGuard()
@@ -157,7 +164,8 @@ final class ForkDuoFoldMonitor {
         snapshot.barEdge = traits.verticalBarEdge
         if traits.horizontalSizeClass != previous.horizontalSizeClass {
             snapshot.horizontalSizeClass = traits.horizontalSizeClass
-            // The Duo fold is a size-class change on the same scene (spec §2); this is the stack <-> split swap.
+            // The Duo fold is a size-class change on the same scene (spec §2): the stack <-> split swap. D3: it only
+            // counts when the hinge confirmed a fold just before; on its own (iPad, Pro Max, sim driver) it is logged.
             foldTransitionStarted(reason: "size-class")
         }
         if oldEdge != snapshot.barEdge {
@@ -222,8 +230,12 @@ final class ForkDuoFoldMonitor {
         } else {
             nil
         }
-        Self.logger.notice("DUO v=1 ev=fold-transition reason=\(reason, privacy: .public) composerFocused=\(composer == nil ? 0 : 1, privacy: .public)")
-        guard let composer, ForkDuoSettings.foldAssistEnabled else { return }
+        let hingeFoldAge = lastHingeFold.map { Date.now.timeIntervalSince($0) }
+        let refocus = ForkDuoFoldRules.shouldRefocus(assistEnabled: ForkDuoSettings.foldAssistEnabled,
+                                                     composerWasFocused: composer != nil,
+                                                     secondsSinceHingeFold: hingeFoldAge)
+        Self.logger.notice("DUO v=1 ev=fold-transition reason=\(reason, privacy: .public) composerFocused=\(composer == nil ? 0 : 1, privacy: .public) hingeFold=\(hingeFoldAge.map { $0 <= ForkDuoFoldRules.hingeFoldWindow } == true ? 1 : 0, privacy: .public) refocus=\(refocus ? 1 : 0, privacy: .public)")
+        guard refocus, let composer else { return }
 
         restoreTask?.cancel()
         restoreTask = Task { [weak self] in
@@ -250,8 +262,14 @@ final class ForkDuoFoldMonitor {
         Self.logger.notice("DUO v=1 ev=fold-keyboard restored=\(restored ? 1 : 0, privacy: .public)")
     }
 
-    private static func isFoldTransition(from old: UIHinge.Status?, to new: UIHinge.Status?) -> Bool {
-        (old == .closed) != (new == .closed)
+    /// `UIHinge.Status` onto the SDK-free rules; `.unknown` (and any future case) is nil, which never confirms a fold.
+    static func posture(_ status: UIHinge.Status?) -> ForkDuoFoldRules.Posture? {
+        switch status {
+        case .closed: .closed
+        case .partiallyOpen: .partiallyOpen
+        case .fullyOpen: .fullyOpen
+        default: nil
+        }
     }
 
     private static func firstResponderTextView(in view: UIView) -> UITextView? {
@@ -288,7 +306,9 @@ final class ForkDuoFoldMonitor {
     }
 
     private func updateSheetGuard() {
-        let shouldRun = ForkDuoSettings.foldAssistEnabled && (snapshot.hingeStatus == .partiallyOpen || !snapshot.activeDivisions.isEmpty)
+        let shouldRun = ForkDuoFoldRules.shouldGuardSheets(assistEnabled: ForkDuoSettings.foldAssistEnabled,
+                                                           posture: Self.posture(snapshot.hingeStatus),
+                                                           activeDivisions: snapshot.activeDivisions)
         if shouldRun, sheetGuardTask == nil {
             sheetGuardTask = Task { [weak self] in
                 while !Task.isCancelled {
@@ -306,12 +326,14 @@ final class ForkDuoFoldMonitor {
     private func guardSheets() {
         guard let window else { return }
         sample(reason: "guard")
-        // Only an upright fold (a tall, thin division, book posture) can be avoided by leading/trailing placement.
-        let uprightDivisions = snapshot.activeDivisions.filter { $0.height > $0.width }
-        guard !uprightDivisions.isEmpty else {
+        // Re-check every pass: partially open AND an upright (tall, thin, book-posture) division, or release.
+        guard ForkDuoFoldRules.shouldGuardSheets(assistEnabled: ForkDuoSettings.foldAssistEnabled,
+                                                 posture: Self.posture(snapshot.hingeStatus),
+                                                 activeDivisions: snapshot.activeDivisions) else {
             releaseSheets()
             return
         }
+        let uprightDivisions = ForkDuoFoldRules.uprightDivisions(snapshot.activeDivisions)
 
         var presenter = window.rootViewController
         while let presented = presenter?.presentedViewController {
