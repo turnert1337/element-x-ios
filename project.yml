@@ -69,7 +69,7 @@ include:
 - path: Components/MapLibre/MapLibreInterface/SupportingFiles/target.yml
 - path: Components/MapLibre/MapLibreShim/SupportingFiles/target.yml
 - path: Components/SDKMocks/SupportingFiles/target.yml
-# - path: MyAppVariant/override.yml
+- path: Components/Variants/TJ/fork.yml
 
 packages:
   # Element/Matrix dependencies

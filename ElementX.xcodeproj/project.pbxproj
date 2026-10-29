@@ -887,6 +887,7 @@
 		877D3CE8680536DB430DE6A2 /* TimelineItemIdentifier.swift in Sources */ = {isa = PBXBuildFile; fileRef = E48C91C8BE55CAE1A3DBC3BC /* TimelineItemIdentifier.swift */; };
 		878070573C7BF19E735707B4 /* RoomTimelineItemProperties.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5DE8D25D6A91030175D52A20 /* RoomTimelineItemProperties.swift */; };
 		879013B1A7DA779C7E0C56A4 /* TrackedUserDefaults.swift in Sources */ = {isa = PBXBuildFile; fileRef = 004397AC54CAE108B6E2385D /* TrackedUserDefaults.swift */; };
+		87A0783FC35DF59AC30BB26A /* ForkHooks.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0E7480D3C1F84F8D416EC5F5 /* ForkHooks.swift */; };
 		87DCBD9BC3A00D3E5849460B /* UserSessionManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = C309DD8B55DA72E69CB652FC /* UserSessionManager.swift */; };
 		87E8C31FCF9276F15CB0B408 /* ThreadTimelineScreenViewModelProtocol.swift in Sources */ = {isa = PBXBuildFile; fileRef = C4C1C19A4BE46EDE1411ECCE /* ThreadTimelineScreenViewModelProtocol.swift */; };
 		8810A2A30A68252EBB54EE05 /* HomeScreenModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = 71BC7CA1BC1041E93077BBA1 /* HomeScreenModels.swift */; };
@@ -1900,6 +1901,7 @@
 		0DD16CE9A66C9040B066AD60 /* vi */ = {isa = PBXFileReference; lastKnownFileType = text.plist.stringsdict; name = vi; path = vi.lproj/Localizable.stringsdict; sourceTree = "<group>"; };
 		0DE0FC9A9F9974A13A2581C0 /* ElementCallManagerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ElementCallManagerTests.swift; sourceTree = "<group>"; };
 		0DF5CBAF69BDF5DF31C661E1 /* IntentionalMentions.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = IntentionalMentions.swift; sourceTree = "<group>"; };
+		0E7480D3C1F84F8D416EC5F5 /* ForkHooks.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ForkHooks.swift; sourceTree = "<group>"; };
 		0E8BDC092D817B68CD9040C5 /* UserSessionStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UserSessionStore.swift; sourceTree = "<group>"; };
 		0E95B3BDB80531C85CD50AE6 /* InvitedRoomProxy.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InvitedRoomProxy.swift; sourceTree = "<group>"; };
 		0EE9EAF0309A2A1D67D8FAF5 /* sv */ = {isa = PBXFileReference; lastKnownFileType = text.plist.stringsdict; name = sv; path = sv.lproj/Localizable.stringsdict; sourceTree = "<group>"; };
@@ -3930,6 +3932,14 @@
 			path = SupportingFiles;
 			sourceTree = "<group>";
 		};
+		25622AAC46393D30E091460E /* Sources */ = {
+			isa = PBXGroup;
+			children = (
+				0E7480D3C1F84F8D416EC5F5 /* ForkHooks.swift */,
+			);
+			path = Sources;
+			sourceTree = "<group>";
+		};
 		2565414373E6F68005966B8E /* SecureBackup */ = {
 			isa = PBXGroup;
 			children = (
@@ -4114,6 +4124,14 @@
 				E9773983346838AABFAA914D /* UserSessionHook.swift */,
 			);
 			path = Hooks;
+			sourceTree = "<group>";
+		};
+		2EECD4C7D5A52B2B49AB1F51 /* TJ */ = {
+			isa = PBXGroup;
+			children = (
+				25622AAC46393D30E091460E /* Sources */,
+			);
+			path = TJ;
 			sourceTree = "<group>";
 		};
 		2F2FED77226A43559F009463 /* TimelineController */ = {
@@ -5547,6 +5565,14 @@
 			path = MediaProvider;
 			sourceTree = "<group>";
 		};
+		75B711D9CAA53D3605921DAA /* Variants */ = {
+			isa = PBXGroup;
+			children = (
+				2EECD4C7D5A52B2B49AB1F51 /* TJ */,
+			);
+			path = Variants;
+			sourceTree = "<group>";
+		};
 		75D1D02F7F3AC1122FCFB4F3 /* Items */ = {
 			isa = PBXGroup;
 			children = (
@@ -6665,6 +6691,7 @@
 				2792BC80FCBBDE9784811D4D /* MapLibre */,
 				2971193D56994881809FD4FA /* SDKMocks */,
 				35EF630F12E2F5BB4A5F3972 /* Secrets */,
+				75B711D9CAA53D3605921DAA /* Variants */,
 			);
 			path = Components;
 			sourceTree = "<group>";
@@ -8015,40 +8042,40 @@
 				ORGANIZATIONNAME = Element;
 				TargetAttributes = {
 					0E28CD62691FDBC63147D5E3 = {
-						DevelopmentTeam = 7J4U792NQT;
+						DevelopmentTeam = 3B5YZV963Z;
 						TestTargetID = C0FAEB81CFD9776CD78CE489;
 					};
 					19F0C845D67E9BEA4BE7133E = {
 						DevelopmentTeam = "$(DEVELOPMENT_TEAM)";
 					};
 					32C23C8D224D46EFE62AFAD0 = {
-						DevelopmentTeam = 7J4U792NQT;
+						DevelopmentTeam = 3B5YZV963Z;
 					};
 					392E7AA23D7BA2CEEB25CF73 = {
-						DevelopmentTeam = 7J4U792NQT;
+						DevelopmentTeam = 3B5YZV963Z;
 					};
 					676A87694F0F247B2AF1A142 = {
-						DevelopmentTeam = 7J4U792NQT;
+						DevelopmentTeam = 3B5YZV963Z;
 					};
 					7A17BE29BAC81ADBAC6349D9 = {
-						DevelopmentTeam = 7J4U792NQT;
+						DevelopmentTeam = 3B5YZV963Z;
 					};
 					96435A765678A64A956EE59C = {
-						DevelopmentTeam = 7J4U792NQT;
+						DevelopmentTeam = 3B5YZV963Z;
 					};
 					C0C687DE1D270F9895FEE186 = {
-						DevelopmentTeam = 7J4U792NQT;
+						DevelopmentTeam = 3B5YZV963Z;
 						TestTargetID = C0FAEB81CFD9776CD78CE489;
 					};
 					C0FAEB81CFD9776CD78CE489 = {
 						DevelopmentTeam = "$(DEVELOPMENT_TEAM)";
 					};
 					D3DB351B7FBE0F49649171FC = {
-						DevelopmentTeam = 7J4U792NQT;
+						DevelopmentTeam = 3B5YZV963Z;
 						TestTargetID = C0FAEB81CFD9776CD78CE489;
 					};
 					F8E276FD6DC43EADB85241BC = {
-						DevelopmentTeam = 7J4U792NQT;
+						DevelopmentTeam = 3B5YZV963Z;
 					};
 					FEB53A5BC378C913769656D8 = {
 						DevelopmentTeam = "$(DEVELOPMENT_TEAM)";
@@ -8141,18 +8168,18 @@
 			projectDirPath = "";
 			projectRoot = "";
 			targets = (
-				C0FAEB81CFD9776CD78CE489 /* ElementX */,
-				FEB53A5BC378C913769656D8 /* NSE */,
-				19F0C845D67E9BEA4BE7133E /* ShareExtension */,
-				32C23C8D224D46EFE62AFAD0 /* UnitTests */,
-				7A17BE29BAC81ADBAC6349D9 /* PreviewTests */,
-				0E28CD62691FDBC63147D5E3 /* UITests */,
-				D3DB351B7FBE0F49649171FC /* IntegrationTests */,
 				C0C687DE1D270F9895FEE186 /* AccessibilityTests */,
+				C0FAEB81CFD9776CD78CE489 /* ElementX */,
+				D3DB351B7FBE0F49649171FC /* IntegrationTests */,
 				96435A765678A64A956EE59C /* MapLibreInterface */,
 				392E7AA23D7BA2CEEB25CF73 /* MapLibreShim */,
 				676A87694F0F247B2AF1A142 /* MatrixRustSDKMocks */,
+				FEB53A5BC378C913769656D8 /* NSE */,
 				F8E276FD6DC43EADB85241BC /* Periphery */,
+				7A17BE29BAC81ADBAC6349D9 /* PreviewTests */,
+				19F0C845D67E9BEA4BE7133E /* ShareExtension */,
+				0E28CD62691FDBC63147D5E3 /* UITests */,
+				32C23C8D224D46EFE62AFAD0 /* UnitTests */,
 			);
 		};
 /* End PBXProject section */
@@ -9109,6 +9136,7 @@
 				64EE9D2CF7AD02EE53983CE1 /* FileRoomTimelineView.swift in Sources */,
 				023E44445795A279281E6106 /* FloatingDateBadge.swift in Sources */,
 				F5D2270B5021D521C0D22E11 /* FlowCoordinatorProtocol.swift in Sources */,
+				87A0783FC35DF59AC30BB26A /* ForkHooks.swift in Sources */,
 				18E3786918486D4C9726BC84 /* FormButtonStyles.swift in Sources */,
 				4D0F4385B7DDB68C66C78857 /* FormattedBodyText.swift in Sources */,
 				7807B1DEE32617896886A8E5 /* FormattingToolbar.swift in Sources */,
@@ -10575,12 +10603,12 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				ALWAYS_SEARCH_USER_PATHS = NO;
-				APP_DISPLAY_NAME = "Element X";
-				APP_GROUP_IDENTIFIER = group.io.element;
+				APP_DISPLAY_NAME = "TJ Element";
+				APP_GROUP_IDENTIFIER = group.com.turnertomlinson.element;
 				APP_NAME = ElementX;
 				ARCHS = arm64;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = "colors/accent-color";
-				BASE_BUNDLE_IDENTIFIER = io.element.elementx;
+				BASE_BUNDLE_IDENTIFIER = com.turnertomlinson.element;
 				CLANG_ANALYZER_LOCALIZABILITY_NONLOCALIZED = YES;
 				CLANG_ANALYZER_NONNULL = YES;
 				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
@@ -10612,13 +10640,13 @@
 				CLANG_WARN_UNREACHABLE_CODE = YES;
 				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
 				CLASSIC_APP_DEEP_LINK_URL = "element://open";
-				CLASSIC_APP_GROUP_IDENTIFIER = group.im.vector;
-				CLASSIC_APP_KEYCHAIN_ACCESS_GROUP_IDENTIFIER = "$(DEVELOPMENT_TEAM).im.vector.app.keychain.shared";
-				CLASSIC_APP_KEYCHAIN_SERVICE_IDENTIFIER = "im.vector.app.encryption-manager-service";
+				CLASSIC_APP_GROUP_IDENTIFIER = group.com.turnertomlinson.element;
+				CLASSIC_APP_KEYCHAIN_ACCESS_GROUP_IDENTIFIER = "$(DEVELOPMENT_TEAM).$(BASE_BUNDLE_IDENTIFIER)";
+				CLASSIC_APP_KEYCHAIN_SERVICE_IDENTIFIER = "com.turnertomlinson.element.classic-encryption-manager-service";
 				COPY_PHASE_STRIP = NO;
 				CURRENT_PROJECT_VERSION = 1;
 				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
-				DEVELOPMENT_TEAM = 7J4U792NQT;
+				DEVELOPMENT_TEAM = 3B5YZV963Z;
 				ENABLE_BITCODE = NO;
 				ENABLE_NS_ASSERTIONS = NO;
 				ENABLE_STRICT_OBJC_MSGSEND = YES;
@@ -10637,7 +10665,7 @@
 				MARKETING_VERSION = 26.11.0;
 				MTL_ENABLE_DEBUG_INFO = NO;
 				MTL_FAST_MATH = YES;
-				PRODUCTION_APP_NAME = Element;
+				PRODUCTION_APP_NAME = "TJ Element";
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SDKROOT = iphoneos;
 				SUPPORTS_MACCATALYST = NO;
@@ -10651,12 +10679,12 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				ALWAYS_SEARCH_USER_PATHS = NO;
-				APP_DISPLAY_NAME = "Element X";
-				APP_GROUP_IDENTIFIER = group.io.element;
+				APP_DISPLAY_NAME = "TJ Element";
+				APP_GROUP_IDENTIFIER = group.com.turnertomlinson.element;
 				APP_NAME = ElementX;
 				ARCHS = arm64;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = "colors/accent-color";
-				BASE_BUNDLE_IDENTIFIER = io.element.elementx;
+				BASE_BUNDLE_IDENTIFIER = com.turnertomlinson.element;
 				CLANG_ANALYZER_LOCALIZABILITY_NONLOCALIZED = YES;
 				CLANG_ANALYZER_NONNULL = YES;
 				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
@@ -10688,13 +10716,13 @@
 				CLANG_WARN_UNREACHABLE_CODE = YES;
 				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
 				CLASSIC_APP_DEEP_LINK_URL = "element://open";
-				CLASSIC_APP_GROUP_IDENTIFIER = group.im.vector;
-				CLASSIC_APP_KEYCHAIN_ACCESS_GROUP_IDENTIFIER = "$(DEVELOPMENT_TEAM).im.vector.app.keychain.shared";
-				CLASSIC_APP_KEYCHAIN_SERVICE_IDENTIFIER = "im.vector.app.encryption-manager-service";
+				CLASSIC_APP_GROUP_IDENTIFIER = group.com.turnertomlinson.element;
+				CLASSIC_APP_KEYCHAIN_ACCESS_GROUP_IDENTIFIER = "$(DEVELOPMENT_TEAM).$(BASE_BUNDLE_IDENTIFIER)";
+				CLASSIC_APP_KEYCHAIN_SERVICE_IDENTIFIER = "com.turnertomlinson.element.classic-encryption-manager-service";
 				COPY_PHASE_STRIP = NO;
 				CURRENT_PROJECT_VERSION = 1;
 				DEBUG_INFORMATION_FORMAT = dwarf;
-				DEVELOPMENT_TEAM = 7J4U792NQT;
+				DEVELOPMENT_TEAM = 3B5YZV963Z;
 				ENABLE_BITCODE = NO;
 				ENABLE_STRICT_OBJC_MSGSEND = YES;
 				ENABLE_TESTABILITY = YES;
@@ -10720,7 +10748,7 @@
 				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
 				MTL_FAST_MATH = YES;
 				ONLY_ACTIVE_ARCH = YES;
-				PRODUCTION_APP_NAME = Element;
+				PRODUCTION_APP_NAME = "TJ Element";
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SDKROOT = iphoneos;
 				SUPPORTS_MACCATALYST = NO;

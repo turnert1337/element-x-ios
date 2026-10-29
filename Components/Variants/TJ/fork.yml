@@ -1,0 +1,41 @@
+# TJ fork override layer (iOS Workshop, Element card).
+# Included from project.yml (the one upstream line edited). Paths here are relative to this file.
+# On an upstream sync: take upstream's pbxproj/plists/entitlements, rerun `xcodegen generate`.
+settings:
+  APP_DISPLAY_NAME: TJ Element          # home-screen label; ASC/TestFlight name is "ElemenTT"
+  PRODUCTION_APP_NAME: TJ Element
+  BASE_BUNDLE_IDENTIFIER: com.turnertomlinson.element
+  APP_GROUP_IDENTIFIER: group.com.turnertomlinson.element
+  DEVELOPMENT_TEAM: 3B5YZV963Z
+  CLASSIC_APP_GROUP_IDENTIFIER: group.com.turnertomlinson.element
+  CLASSIC_APP_KEYCHAIN_ACCESS_GROUP_IDENTIFIER: "$(DEVELOPMENT_TEAM).$(BASE_BUNDLE_IDENTIFIER)"
+  # No "classic" app exists for this bundle; keep the classicApp* plist keys free of im.vector.
+  CLASSIC_APP_KEYCHAIN_SERVICE_IDENTIFIER: com.turnertomlinson.element.classic-encryption-manager-service
+
+targets:
+  ElementX:
+    entitlements:
+      # Upstream ElementX entitlements MINUS aps-environment, usernotifications.communication
+      # and associated-domains (v1: no push, not in element.io's AASA). The CLASSIC_* entries
+      # resolve to the same group/keychain as below, so they are not repeated.
+      properties:REPLACE:
+        com.apple.security.app-sandbox: true
+        com.apple.security.network.client: true
+        com.apple.security.application-groups:
+        - $(APP_GROUP_IDENTIFIER)
+        keychain-access-groups:
+        - $(KEYCHAIN_ACCESS_GROUP_IDENTIFIER)
+    sources:
+    - path: Sources                     # → Components/Variants/TJ/Sources (ForkHooks.swift)
+
+  NSE:
+    entitlements:
+      # Strip com.apple.developer.usernotifications.filtering (restricted; signing would fail).
+      properties:REPLACE:
+        com.apple.security.application-groups:
+        - $(APP_GROUP_IDENTIFIER)
+        keychain-access-groups:
+        - $(KEYCHAIN_ACCESS_GROUP_IDENTIFIER)
+
+# ShareExtension: NO override. Its upstream entitlements are already group + keychain only,
+# driven by the variables above (ShareExtension/SupportingFiles/target.yml:65-71).
