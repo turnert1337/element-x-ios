@@ -5,7 +5,7 @@
 // Spec: WatchLab/Element/01_DUO_SPEC.md §5.5; prep notes: research/duo/06_prep_on_26.md A3.
 // Logs one machine-parsable line per change (subsystem com.turnertomlinson.element, category DuoProbe)
 // and shows the same fields in a pill for 4 s. Never logs or shows content, names, room IDs or text.
-// The 27.1 fields (hinge, reserved regions, accessory) read `n/a(sdk26)` until the `#if TJ_SDK27` half lands.
+// The 27.1 fields (hinge, vertical-bar edge, reserved regions) come from ForkDuoFold27.swift; `n/a` on older SDKs/OSes.
 //
 // Query: log show --last 5m --predicate 'subsystem == "com.turnertomlinson.element" AND category == "DuoProbe"'
 //
@@ -36,7 +36,7 @@ final class ForkDuoProbe {
     private var pillHideTask: Task<Void, Never>?
 
     /// Extra fields appended by other TJ components (e.g. the back-screen controller's `acc=` state).
-    var accessoryState = "n/a(sdk26)"
+    var accessoryState = "n/a"
 
     func start() {
         guard !isStarted else { return }
@@ -191,8 +191,7 @@ final class ForkDuoProbe {
             "scenes=[\(Self.sceneSummary())]",
             "kb=\(isKeyboardVisible ? 1 : 0)",
             "lock=\(isLockScreenVisible ? 1 : 0)",
-            "hinge=n/a(sdk26)",
-            "regions=n/a(sdk26)",
+            Self.foldFields(),
             "acc=\(accessoryState)"
         ]
         return fields.joined(separator: " ")
@@ -232,7 +231,7 @@ final class ForkDuoProbe {
     static func sceneSummary() -> String {
         UIApplication.shared.connectedScenes.map { scene in
             let id = scene.session.userInfo?[SceneDelegate.sceneIDKey] as? String == SceneDelegate.mainSceneID ? "Main" : "other"
-            let role = scene.session.role == .windowApplication ? "app" : "role"
+            let role = Self.roleName(scene.session.role)
             let state = switch scene.activationState {
             case .foregroundActive: "fa"
             case .foregroundInactive: "fi"
@@ -243,6 +242,24 @@ final class ForkDuoProbe {
         }
         .sorted()
         .joined(separator: ",")
+    }
+
+    /// Hinge, vertical-bar edge and reserved regions from the fold monitor (iOS 27.1 SDK and OS only).
+    static func foldFields() -> String {
+        #if TJ_SDK27
+        if #available(iOS 27.1, *) {
+            return ForkDuoFoldMonitor.shared.snapshot.probeFields
+        }
+        #endif
+        return "hinge=n/a bar=n/a div=n/a"
+    }
+
+    static func roleName(_ role: UISceneSession.Role) -> String {
+        if role == .windowApplication { return "app" }
+        #if TJ_SDK27
+        if #available(iOS 27.1, *), role == .windowCameraCaptureAccessory { return "camacc" }
+        #endif
+        return "other"
     }
 
     /// SwiftUI's NavigationSplitView / NavigationStack / TabView sit on UIKit containers. Element shows a

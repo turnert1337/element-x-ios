@@ -16,6 +16,7 @@ nonisolated enum ForkDuoSettings {
         static let probe = "tj.duo.probe"
         static let backScreen = "tj.duo.backScreen"
         static let backScreenForceSim = "tj.duo.backScreen.forceSim"
+        static let foldAssist = "tj.duo.foldAssist"
     }
 
     enum BackScreenMode: String, CaseIterable, Sendable {
@@ -32,6 +33,12 @@ nonisolated enum ForkDuoSettings {
 
     static var probeEnabled: Bool {
         UserDefaults.standard.object(forKey: Key.probe) as? Bool ?? true
+    }
+
+    /// iOS 27.1 fold assist (ForkDuoFold27.swift): keyboard continuity across a fold, sheets kept off an upright fold.
+    /// Off = observe and log only.
+    static var foldAssistEnabled: Bool {
+        UserDefaults.standard.object(forKey: Key.foldAssist) as? Bool ?? true
     }
 
     static var backScreenMode: BackScreenMode {
@@ -73,6 +80,7 @@ private struct ForkDuoRowsView: View {
     #if TJ_DUO_PROBE
     @AppStorage(ForkDuoSettings.Key.probe) private var probeEnabled = true
     #endif
+    @AppStorage(ForkDuoSettings.Key.foldAssist) private var foldAssistEnabled = true
     @AppStorage(ForkDuoSettings.Key.backScreen) private var backScreenMode = ForkDuoSettings.defaultBackScreenMode.rawValue
     @AppStorage(ForkDuoSettings.Key.backScreenForceSim) private var forceSim = false
 
@@ -88,6 +96,11 @@ private struct ForkDuoRowsView: View {
             Text("Logs size class, layout and scenes (DuoProbe) and shows a 4 s pill after each change. Never content.")
         }
         #endif
+
+        Toggle(isOn: $foldAssistEnabled) {
+            Text("Fold assist")
+            Text("iPhone Duo (iOS 27.1): keeps the composer keyboard across a fold and sheets off the fold. Off = log only.")
+        }
 
         Picker(selection: $backScreenMode) {
             ForEach(ForkDuoSettings.BackScreenMode.allCases, id: \.rawValue) { mode in

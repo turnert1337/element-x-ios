@@ -1642,6 +1642,7 @@
 		F7DA19B5122AD8FA8F91B753 /* DeclineAndBlockScreenViewModelProtocol.swift in Sources */ = {isa = PBXBuildFile; fileRef = 951F277E0585E50AC91987C8 /* DeclineAndBlockScreenViewModelProtocol.swift */; };
 		F833D5B5BE6707F961FA88DB /* SecureBackupController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5A1119E9C63AE530252640D2 /* SecureBackupController.swift */; };
 		F86102DC2C68BBBB0521BAAE /* SoftLogoutScreenModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2BB385E148DE55C85C0A02D6 /* SoftLogoutScreenModels.swift */; };
+		F86848184DE9FEBF3574CF0F /* ForkDuoFold27.swift in Sources */ = {isa = PBXBuildFile; fileRef = D7F656B337A1777BF892F3F9 /* ForkDuoFold27.swift */; };
 		F8B2F5CBCF2A0E0798E8D646 /* TimelineViewModelProtocol.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB5B00A014307CE37B2812CD /* TimelineViewModelProtocol.swift */; };
 		F8B72DC211E95126444531DE /* NotificationToneManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = B94A6A57FE7E71F7605070AA /* NotificationToneManager.swift */; };
 		F8C87130FD999F7F1076208C /* RoomChangePermissionsScreen.swift in Sources */ = {isa = PBXBuildFile; fileRef = 89AAEA70CFF3284920811941 /* RoomChangePermissionsScreen.swift */; };
@@ -3153,6 +3154,7 @@
 		D79BB714D28C9F588DD69353 /* SecureBackupScreenViewModelProtocol.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SecureBackupScreenViewModelProtocol.swift; sourceTree = "<group>"; };
 		D7B18089ED50324583BB2FB7 /* EditRoomAddressScreenViewModelProtocol.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EditRoomAddressScreenViewModelProtocol.swift; sourceTree = "<group>"; };
 		D7BB243B26D54EF1A0C422C0 /* NotificationContentBuilder.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NotificationContentBuilder.swift; sourceTree = "<group>"; };
+		D7F656B337A1777BF892F3F9 /* ForkDuoFold27.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ForkDuoFold27.swift; sourceTree = "<group>"; };
 		D80807B554CF9C524F98674F /* ManageRoomMemberSheetViewModelTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ManageRoomMemberSheetViewModelTests.swift; sourceTree = "<group>"; };
 		D8320AB70CEFCDC0EC6E72B6 /* ur */ = {isa = PBXFileReference; lastKnownFileType = text.plist.strings; name = ur; path = ur.lproj/InfoPlist.strings; sourceTree = "<group>"; };
 		D83B5B70B81B696066D3B07B /* ClientFactoryMock.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ClientFactoryMock.swift; sourceTree = "<group>"; };
@@ -3967,6 +3969,7 @@
 				6CFD7B84D61EF8A9F63055D4 /* ForkDuoBackScreen27.swift */,
 				C8BEB182A8C16B1C4A6C039F /* ForkDuoBackScreenCard.swift */,
 				D65A7EE25883AAADE36F38B8 /* ForkDuoBootstrap.m */,
+				D7F656B337A1777BF892F3F9 /* ForkDuoFold27.swift */,
 				EACAE2E7511DCCC0151D23B4 /* ForkDuoProbe.swift */,
 				1EE739908CC624646433F29E /* ForkDuoRuntime.swift */,
 				F05B0842D46A6B2FE4430415 /* ForkDuoSettings.swift */,
@@ -9179,6 +9182,7 @@
 				2BEFF20BDED05EF5772D7B5E /* ForkDuoBackScreen27.swift in Sources */,
 				00408AC2B706CE6785151056 /* ForkDuoBackScreenCard.swift in Sources */,
 				968315670341FA4F26A811D2 /* ForkDuoBootstrap.m in Sources */,
+				F86848184DE9FEBF3574CF0F /* ForkDuoFold27.swift in Sources */,
 				37BA17AEB500D8200537C914 /* ForkDuoProbe.swift in Sources */,
 				1F222EF76BB602E85AD06A76 /* ForkDuoRuntime.swift in Sources */,
 				7264055C120726443259CCFB /* ForkDuoSettings.swift in Sources */,

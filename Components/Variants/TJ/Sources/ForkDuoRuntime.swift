@@ -26,10 +26,38 @@ enum ForkDuoRuntime {
         // 26.6: the logging presenter only. The 27.1 presenter is chosen in ForkDuoBackScreen27.swift (TJ_SDK27).
         ForkDuoBackScreen.shared.start(presenter: ForkDuoRuntime.makeAccessoryPresenter())
         #endif
+        #if TJ_SDK27
+        // Fold assist (hinge, vertical-bar edge, fold division, keyboard continuity, sheets off the fold). iOS 27.1 only.
+        if #available(iOS 27.1, *) {
+            ForkDuoFoldMonitor.shared.start()
+        }
+        #endif
         #if DEBUG && targetEnvironment(simulator)
         ForkDuoSimDriver.shared.start()
         #endif
         logger.notice("DUO v=1 ev=runtime-start reason=\(reason, privacy: .public)")
+    }
+}
+
+extension ForkDuoRuntime {
+    /// The upstream main scene (`SceneDelegate.mainSceneID`), never an accessory or secondary window scene.
+    static func mainScene() -> UIWindowScene? {
+        UIApplication.shared.connectedScenes
+            .compactMap { $0 as? UIWindowScene }
+            .first { $0.session.userInfo?[SceneDelegate.sceneIDKey] as? String == SceneDelegate.mainSceneID }
+    }
+
+    /// The upstream main window (WindowManager), only while it sits on the main scene.
+    static func mainWindow() -> UIWindow? {
+        guard let scene = mainScene() else { return nil }
+        let managed: UIWindow? = SceneDelegate.windowManager?.mainWindow
+        return managed?.windowScene === scene ? managed : nil
+    }
+
+    /// True while upstream's app-lock window (`alternateWindow`) is showing.
+    static var isLockWindowVisible: Bool {
+        let alternateWindow: UIWindow? = SceneDelegate.windowManager?.alternateWindow
+        return alternateWindow.map { !$0.isHidden } ?? false
     }
 }
 
