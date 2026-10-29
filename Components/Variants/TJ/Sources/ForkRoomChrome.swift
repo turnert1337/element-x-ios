@@ -445,10 +445,14 @@ struct ForkRoomToolbar {
         return Button {
             coordinator.toggleArtifacts()
         } label: {
-            Label(open ? "Close artifacts" : "Artifacts", systemImage: open ? "square.stack.3d.up.fill" : "square.stack.3d.up")
+            Label {
+                Text(open ? "Close artifacts" : "Artifacts")
+            } icon: {
+                Image(systemName: open ? "square.stack.3d.up.fill" : "square.stack.3d.up")
+                    .overlay(alignment: .topTrailing) { ForkRailBadge(text: model.timerDoneBadge ? "!" : (count > 0 ? "\(count)" : nil)) }
+            }
         }
         .tint(open ? .accentColor : nil)
-        .badge(model.timerDoneBadge ? Text("Timer done") : (count > 0 ? Text("\(count)") : nil))
         .accessibilityValue(model.timerDoneBadge ? "Timer done" : (count > 0 ? "\(count) artifacts" : ""))
         .accessibilityIdentifier("tj_room-artifacts")
     }
@@ -483,5 +487,23 @@ struct ForkRoomToolbar {
             Label("Dev log", systemImage: "list.bullet.rectangle")
         }
         .accessibilityIdentifier("tj_room-devlog")
+    }
+}
+
+/// The small count (or "Timer done" "!") badge on the room's Artifacts item.
+struct ForkRailBadge: View {
+    let text: String?
+
+    var body: some View {
+        if let text {
+            Text(text)
+                .font(.system(size: 10, weight: .bold).monospacedDigit())
+                .foregroundStyle(.white)
+                .padding(.horizontal, 4)
+                .frame(minWidth: 15, minHeight: 15)
+                .background(Color.red, in: Capsule())
+                .offset(x: 8, y: -7)
+                .accessibilityHidden(true)
+        }
     }
 }

@@ -25,6 +25,8 @@ struct ForkPipeBadge: View {
     var body: some View {
         Text(pipe.badge)
             .font(.caption2.weight(.semibold))
+            .lineLimit(1)
+            .fixedSize()                    // the badge never truncates ("Xco…"); the title gives way instead
             .padding(.horizontal, 6)
             .padding(.vertical, 2)
             .foregroundStyle(pipe == .nas ? Color.teal : Color.indigo)
@@ -40,7 +42,7 @@ struct ForkArtifactTitleLabel: View {
         if let entry {
             HStack(spacing: 6) {
                 Image(systemName: entry.symbolName)
-                Text(entry.title).lineLimit(1)
+                Text(entry.title).lineLimit(1).truncationMode(.tail).layoutPriority(-1)
                 ForkPipeBadge(pipe: entry.pipe)
             }
             .font(.headline)
@@ -53,17 +55,24 @@ struct ForkArtifactTitleLabel: View {
 }
 
 /// The D16 chip and the §5.3 "Draft kept" chip; never blocks the canvas.
+/// Shown in the header (compact principal / split header strip), never over the canvas: a SwiftUI control drawn over the
+/// WKWebView doesn't receive taps (UIKit routes them to the web view).
 struct ForkArtifactChips: View {
     let model: ForkArtifactsModel
     let actions: ForkArtifactsActions
 
+    static func hasChip(_ model: ForkArtifactsModel) -> Bool {
+        (model.selectedEntry.flatMap { model.htmlStates[$0.aid]?.chipVersion } != nil) || (model.draftKept && !model.draft.isEmpty)
+    }
+
     var body: some View {
-        VStack(spacing: 8) {
+        HStack(spacing: 8) {
             if let aid = model.selectedEntry?.aid, let version = model.htmlStates[aid]?.chipVersion {
                 Button {
                     model.reload(aid: aid)
                 } label: {
                     Label("Updated to v\(version): reload", systemImage: "arrow.clockwise")
+                        .labelStyle(.titleAndIcon)
                         .font(.footnote.weight(.semibold))
                         .padding(.horizontal, 12)
                         .padding(.vertical, 7)
@@ -77,6 +86,7 @@ struct ForkArtifactChips: View {
                     actions.newArtifact()
                 } label: {
                     Label("Draft kept: tap + to continue", systemImage: "square.and.pencil")
+                        .labelStyle(.titleAndIcon)
                         .font(.footnote.weight(.semibold))
                         .padding(.horizontal, 12)
                         .padding(.vertical, 7)
@@ -86,7 +96,6 @@ struct ForkArtifactChips: View {
                 .accessibilityIdentifier("tj_artifacts-draft-chip")
             }
         }
-        .padding(.top, 8)
     }
 }
 
@@ -223,8 +232,7 @@ struct ForkArtifactsScreen: View {
     var body: some View {
         ForkArtifactCanvas(model: model)
             .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .overlay(alignment: .top) { ForkArtifactChips(model: model, actions: actions) }
-            .overlay(alignment: .bottom) { ForkArtifactChangeNote(model: model) }
+            .overlay(alignment: .bottom) { ForkArtifactChangeNote(model: model).allowsHitTesting(false) }
             .navigationBarTitleDisplayMode(.inline)
             .toolbar { toolbar }
             .toolbarBackground(.visible, for: .navigationBar)
@@ -237,7 +245,11 @@ struct ForkArtifactsScreen: View {
     private var toolbar: some ToolbarContent {
         ToolbarItem(placement: .principal) {
             HStack(spacing: 8) {
-                ForkArtifactTitleLabel(entry: model.selectedEntry)
+                if ForkArtifactChips.hasChip(model) {
+                    ForkArtifactChips(model: model, actions: actions)
+                } else {
+                    ForkArtifactTitleLabel(entry: model.selectedEntry)
+                }
                 ForkArtifactHeaderMenu(model: model, actions: actions)
             }
         }
@@ -319,7 +331,6 @@ struct ForkArtifactsPane: View {
             ForkArtifactCanvas(model: model)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .safeAreaInset(edge: .top, spacing: 0) { ForkArtifactsPaneHeader(model: model, actions: actions) }
-                .overlay(alignment: .top) { ForkArtifactChips(model: model, actions: actions).padding(.top, 44) }
             ForkArtifactRail(model: model, actions: actions)
         }
         .onAppear { model.zoneAppeared() }
@@ -335,6 +346,7 @@ struct ForkArtifactsPaneHeader: View {
     var body: some View {
         HStack(spacing: 8) {
             ForkArtifactTitleLabel(entry: model.selectedEntry)
+            ForkArtifactChips(model: model, actions: actions)
             if let note = model.headerNote, note.aid == model.selectedEntry?.aid {
                 Text(note.text).font(.caption).foregroundStyle(.secondary).lineLimit(1)
                     .accessibilityIdentifier("tj_artifacts-change-note")

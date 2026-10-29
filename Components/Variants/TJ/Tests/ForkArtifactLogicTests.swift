@@ -233,6 +233,19 @@ struct ForkDevLogSchemaTests {
         #expect(ticket.request?.addenda?.first?.eventID == nil)
     }
 
+    /// Matrix rejects floats in event JSON (Synapse: M_BAD_JSON "float"), so writers may send integers or numeric strings.
+    @Test
+    func dollarsDecodeFromIntegersStringsAndNumbers() throws {
+        let content: ForkJSON = .object(["v": .number(1), "id": .string("x"), "title": .string("t"), "stage": .string("building"),
+                                         "cost": .object(["total_usd": .string("12.34"), "total_is_estimate": .bool(true),
+                                                          "runs": .array([.object(["cost_usd": .number(3)]), .object(["cost_usd": .string("$0.75")]), .object(["cost_usd": .bool(true)])])]),
+                                         "items": .array([.object(["name": .string("a"), "cost_usd": .string("1.5")])])])
+        let ticket = try #require(ForkDevLogTicket.parse(content: content))
+        #expect(ticket.cost?.totalUSD == 12.34)
+        #expect(ticket.cost?.runs?.map(\.costUSD) == [3, 0.75, nil])
+        #expect(ticket.items?.first?.costUSD == 1.5)
+    }
+
     @Test
     func minimalTicketDecodesWithoutOptionalFields() throws {
         let ticket = try #require(ForkDevLogTicket.parse(content: .object(["v": .number(1), "id": .string("mx_1"), "title": .string("t"), "stage": .string("queued")])))

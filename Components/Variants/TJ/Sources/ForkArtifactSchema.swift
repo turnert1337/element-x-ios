@@ -548,6 +548,29 @@ nonisolated enum ForkArtifactSHA {
 
 // MARK: - Dev log tickets (§3.4)
 
+/// Matrix forbids floats in event JSON (canonical JSON: Synapse answers M_BAD_JSON "float"), so dollar amounts may arrive as
+/// integers, numeric strings or (from older writers) numbers; decode all three, and never fail the whole ticket over one.
+nonisolated struct ForkLenientDouble: Decodable, Equatable, Sendable {
+    let value: Double?
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.singleValueContainer()
+        if let number = try? container.decode(Double.self) {
+            value = number
+        } else if let text = try? container.decode(String.self) {
+            value = Double(text.trimmingCharacters(in: CharacterSet(charactersIn: "$ ")))
+        } else {
+            value = nil
+        }
+    }
+}
+
+extension KeyedDecodingContainer {
+    nonisolated func decodeLenientDouble(forKey key: Key) -> Double? {
+        (try? decodeIfPresent(ForkLenientDouble.self, forKey: key))?.value
+    }
+}
+
 nonisolated struct ForkDevLogTicket: Decodable, Equatable, Sendable, Identifiable {
     struct Progress: Decodable, Equatable, Sendable {
         let done: Int?
@@ -626,6 +649,17 @@ nonisolated struct ForkDevLogTicket: Decodable, Equatable, Sendable, Identifiabl
             case name, type, feature, status, note, validation
             case costUSD = "cost_usd"
         }
+
+        init(from decoder: Decoder) throws {
+            let c = try decoder.container(keyedBy: CodingKeys.self)
+            name = try? c.decodeIfPresent(String.self, forKey: .name)
+            type = try? c.decodeIfPresent(String.self, forKey: .type)
+            feature = try? c.decodeIfPresent(String.self, forKey: .feature)
+            status = try? c.decodeIfPresent(String.self, forKey: .status)
+            note = try? c.decodeIfPresent(String.self, forKey: .note)
+            validation = try? c.decodeIfPresent(String.self, forKey: .validation)
+            costUSD = c.decodeLenientDouble(forKey: .costUSD)
+        }
     }
 
     struct Gate: Decodable, Equatable, Sendable {
@@ -680,6 +714,20 @@ nonisolated struct ForkDevLogTicket: Decodable, Equatable, Sendable, Identifiabl
             case durationMS = "duration_ms"
         }
 
+        init(from decoder: Decoder) throws {
+            let c = try decoder.container(keyedBy: CodingKeys.self)
+            kind = try? c.decodeIfPresent(String.self, forKey: .kind)
+            label = try? c.decodeIfPresent(String.self, forKey: .label)
+            model = try? c.decodeIfPresent(String.self, forKey: .model)
+            input = try? c.decodeIfPresent(Int.self, forKey: .input)
+            output = try? c.decodeIfPresent(Int.self, forKey: .output)
+            cacheRead = try? c.decodeIfPresent(Int.self, forKey: .cacheRead)
+            cacheWrite = try? c.decodeIfPresent(Int.self, forKey: .cacheWrite)
+            costUSD = c.decodeLenientDouble(forKey: .costUSD)
+            durationMS = try? c.decodeIfPresent(Int.self, forKey: .durationMS)
+            source = try? c.decodeIfPresent(String.self, forKey: .source)
+        }
+
         /// The receipt's source chip (§5.7 item 6).
         var sourceChip: String {
             switch source {
@@ -704,6 +752,17 @@ nonisolated struct ForkDevLogTicket: Decodable, Equatable, Sendable, Identifiabl
             case totalUSD = "total_usd"
             case totalIsEstimate = "total_is_estimate"
             case coverageNote = "coverage_note"
+        }
+
+        init(from decoder: Decoder) throws {
+            let c = try decoder.container(keyedBy: CodingKeys.self)
+            basis = try? c.decodeIfPresent(String.self, forKey: .basis)
+            totalUSD = c.decodeLenientDouble(forKey: .totalUSD)
+            totalIsEstimate = try? c.decodeIfPresent(Bool.self, forKey: .totalIsEstimate)
+            coverage = try? c.decodeIfPresent(String.self, forKey: .coverage)
+            coverageNote = try? c.decodeIfPresent(String.self, forKey: .coverageNote)
+            tokens = try? c.decodeIfPresent(Tokens.self, forKey: .tokens)
+            runs = try? c.decodeIfPresent([Run].self, forKey: .runs)
         }
 
         var isPartial: Bool { coverage == "partial" }

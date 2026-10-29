@@ -25,7 +25,13 @@ final class ForkArtifactOverlayWindow: UIWindow {
     }
 }
 
-final class ForkArtifactFullScreenHost: UIHostingController<ForkArtifactFullScreenView> {
+/// The exit button is a UIKit view on top of the hosting view: a SwiftUI button drawn over the WKWebView
+/// (a UIViewRepresentable) never received the touch on iOS 27.1 (G-A2 run 1), because UIKit routes it to the web view.
+final class ForkArtifactFullScreenHost: UIHostingController<ForkArtifactFullScreenView>, UIGestureRecognizerDelegate {
+    var onExit: (() -> Void)?
+    private let exitButton = UIButton(type: .system)
+    private var fadeTask: Task<Void, Never>?
+
     override var prefersStatusBarHidden: Bool { true }
     override var prefersHomeIndicatorAutoHidden: Bool { true }
     override var preferredScreenEdgesDeferringSystemGestures: UIRectEdge { .all }
@@ -34,56 +40,66 @@ final class ForkArtifactFullScreenHost: UIHostingController<ForkArtifactFullScre
         super.viewDidLoad()
         view.backgroundColor = .systemBackground
         view.accessibilityViewIsModal = true
+
+        // White on a dark disc: readable over any artifact (games are often dark, diagrams light).
+        var configuration = UIButton.Configuration.plain()
+        configuration.image = UIImage(systemName: "arrow.down.right.and.arrow.up.left",
+                                      withConfiguration: UIImage.SymbolConfiguration(pointSize: 17, weight: .semibold))
+        configuration.baseForegroundColor = .white
+        configuration.background.backgroundColor = UIColor.black.withAlphaComponent(0.55)
+        configuration.background.strokeColor = UIColor.white.withAlphaComponent(0.35)
+        configuration.background.strokeWidth = 1
+        configuration.background.cornerRadius = 22
+        exitButton.configuration = configuration
+        exitButton.accessibilityLabel = "Exit full screen"
+        exitButton.accessibilityIdentifier = "tj_artifacts-exit-fullscreen"
+        exitButton.addAction(UIAction { [weak self] _ in self?.onExit?() }, for: .primaryActionTriggered)
+        exitButton.translatesAutoresizingMaskIntoConstraints = false
+        view.addSubview(exitButton)
+        NSLayoutConstraint.activate([exitButton.leadingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.leadingAnchor, constant: 10),
+                                     exitButton.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor, constant: 6),
+                                     exitButton.widthAnchor.constraint(equalToConstant: 44),
+                                     exitButton.heightAnchor.constraint(equalToConstant: 44)])
+        view.accessibilityElements = nil
+
+        // Any touch wakes the button (fades to 30% after 3 s; never hidden).
+        let wake = UITapGestureRecognizer(target: self, action: #selector(wakeButton))
+        wake.cancelsTouchesInView = false
+        wake.delegate = self
+        view.addGestureRecognizer(wake)
+        wakeButton()
+    }
+
+    override func viewDidLayoutSubviews() {
+        super.viewDidLayoutSubviews()
+        view.bringSubviewToFront(exitButton)
+    }
+
+    @objc private func wakeButton() {
+        exitButton.alpha = 1
+        fadeTask?.cancel()
+        fadeTask = Task { [weak self] in
+            try? await Task.sleep(for: .seconds(3))
+            guard !Task.isCancelled else { return }
+            UIView.animate(withDuration: 0.6) { self?.exitButton.alpha = 0.3 }
+        }
+    }
+
+    func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer, shouldRecognizeSimultaneouslyWith otherGestureRecognizer: UIGestureRecognizer) -> Bool {
+        true
     }
 }
 
 struct ForkArtifactFullScreenView: View {
     let model: ForkArtifactsModel
-    let exit: () -> Void
-
-    @State private var dimmed = false
-    @State private var fadeTask: Task<Void, Never>?
 
     var body: some View {
-        ZStack(alignment: .topLeading) {
-            ForkArtifactCanvas(model: model, isFullScreenHost: true)
-                .ignoresSafeArea()
-                .simultaneousGesture(TapGesture().onEnded { wake() })
-            Button(action: exit) {
-                Image(systemName: "arrow.down.right.and.arrow.up.left")
-                    .font(.system(size: 17, weight: .semibold))
-                    .frame(width: 44, height: 44)
-                    .modifier(ForkRailCircleBackground(selected: false))
-            }
-            .buttonStyle(.plain)
-            .opacity(dimmed ? 0.3 : 1)
-            .animation(.easeInOut(duration: 0.6), value: dimmed)
-            .padding(.leading, 10)
-            .padding(.top, 6)
-            .accessibilityLabel("Exit full screen")
-            .accessibilityIdentifier("tj_artifacts-exit-fullscreen")
-            .accessibilitySortPriority(1000)
-        }
-        .statusBarHidden(true)
-        .persistentSystemOverlays(.hidden)
-        .onAppear {
-            model.zoneAppeared()
-            wake()
-        }
-        .onDisappear {
-            fadeTask?.cancel()
-            model.zoneDisappeared()
-        }
-    }
-
-    private func wake() {
-        dimmed = false
-        fadeTask?.cancel()
-        fadeTask = Task {
-            try? await Task.sleep(for: .seconds(3))
-            guard !Task.isCancelled else { return }
-            dimmed = true
-        }
+        ForkArtifactCanvas(model: model, isFullScreenHost: true)
+            .ignoresSafeArea()
+            .statusBarHidden(true)
+            .persistentSystemOverlays(.hidden)
+            .onAppear { model.zoneAppeared() }
+            .onDisappear { model.zoneDisappeared() }
     }
 }
 
@@ -105,7 +121,9 @@ final class ForkArtifactOverlayController {
         guard window == nil else { return }
         previousKeyWindow = scene.windows.first { $0.isKeyWindow }
         let overlay = ForkArtifactOverlayWindow(windowScene: scene)
-        overlay.rootViewController = ForkArtifactFullScreenHost(rootView: ForkArtifactFullScreenView(model: model, exit: exit))
+        let host = ForkArtifactFullScreenHost(rootView: ForkArtifactFullScreenView(model: model))
+        host.onExit = exit
+        overlay.rootViewController = host
         overlay.makeKeyAndVisible()
         window = overlay
         onGracefulExit = exit

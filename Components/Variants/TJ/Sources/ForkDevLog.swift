@@ -89,6 +89,13 @@ final class ForkDevLogModel {
 
     private func resolvedRoomID() async throws -> String {
         if let roomID { return roomID }
+        #if DEBUG
+        // Gate harness only (`-TJDevlogRoom <scratch room id>`): render fixture tickets from a scratch room, never #tj-devlog.
+        if let override = UserDefaults.standard.string(forKey: "TJDevlogRoom"), override.hasPrefix("!") {
+            roomID = override
+            return override
+        }
+        #endif
         let id = try await rest.resolveAlias(ForkArtifactConstants.devlogAlias)
         roomID = id
         return id
