@@ -18,13 +18,28 @@ nonisolated extension AppHooks {
 }
 
 /// Modeled on `DefaultAppSettingsHook`. Passes every current value through unchanged except:
-/// - `oAuthRedirectURL`: a custom scheme (no associated domain / AASA needed).
+/// - The OAuth/OIDC client metadata (`AppSettings.oAuthConfiguration`), so the fork identifies to
+///   authorization servers as the operator's own client, never as Element:
+///   - client_name  = CFBundleDisplayName = "TJ Element" (APP_DISPLAY_NAME in fork.yml)
+///   - client_uri   = `websiteURL` with `oAuthClientURIPath` = nil → https://autopute.ai/
+///   - logo_uri     = `logoURL` (autopute.ai serves no image, so the site root)
+///   - tos_uri      = `acceptableUseURL`, policy_uri = `privacyURL` → https://autopute.ai/privacy
+///   - redirect_uri = `oAuthRedirectURL`, a custom scheme (no associated domain / AASA needed)
 /// - `accountProviders`: the operator's own homeserver first (the login default), matrix.org second.
 ///   `allowOtherAccountProviders` stays `true`, so "Change server" still accepts any server (e.g. matrix.org).
 nonisolated struct ForkAppSettingsHook: AppSettingsHookProtocol {
-    /// Custom-scheme OAuth redirect. Must be the reversed host of the OAuth `client_uri`
-    /// (`https://element.io/apps/ios`) for MAS to accept it.
-    static let oAuthRedirectURL: URL = "io.element.tjfork:/callback"
+    /// OAuth client_uri. The redirect scheme below must be this host reversed (MAS rule for native clients).
+    static let websiteURL: URL = "https://autopute.ai/"
+    /// nil, so client_uri is exactly `websiteURL` (no path appended).
+    static let oAuthClientURIPath: String? = nil
+    /// autopute.ai serves no image (every icon path falls back to the HTML index), so the site root.
+    static let logoURL: URL = "https://autopute.ai/"
+    /// GET https://autopute.ai/privacy → 200 "Privacy Policy — Autopute". Used for policy_uri and tos_uri.
+    static let privacyURL: URL = "https://autopute.ai/privacy"
+    static let acceptableUseURL: URL = "https://autopute.ai/privacy"
+
+    /// Custom-scheme OAuth redirect: reversed client_uri host (autopute.ai → ai.autopute).
+    static let oAuthRedirectURL: URL = "ai.autopute:/callback"
 
     /// The operator's private homeserver: server name `autopute.ai` (.well-known delegated to matrix.autopute.ai).
     static let accountProviders: [AccountProvider] = [.managed(serverName: "autopute.ai", baseURL: "https://matrix.autopute.ai"),
@@ -36,12 +51,12 @@ nonisolated struct ForkAppSettingsHook: AppSettingsHookProtocol {
                              hideBrandChrome: appSettings.hideBrandChrome,
                              pushGatewayBaseURL: appSettings.pushGatewayBaseURL,
                              oAuthRedirectURL: Self.oAuthRedirectURL,
-                             oAuthClientURIPath: appSettings.oAuthClientURIPath,
-                             websiteURL: appSettings.websiteURL,
-                             logoURL: appSettings.logoURL,
+                             oAuthClientURIPath: Self.oAuthClientURIPath,
+                             websiteURL: Self.websiteURL,
+                             logoURL: Self.logoURL,
                              copyrightURL: appSettings.copyrightURL,
-                             acceptableUseURL: appSettings.acceptableUseURL,
-                             privacyURL: appSettings.privacyURL,
+                             acceptableUseURL: Self.acceptableUseURL,
+                             privacyURL: Self.privacyURL,
                              encryptionURL: appSettings.encryptionURL,
                              deviceVerificationURL: appSettings.deviceVerificationURL,
                              chatBackupDetailsURL: appSettings.chatBackupDetailsURL,
