@@ -19,6 +19,8 @@ nonisolated extension AppHooks {
         registerDeveloperOptionsScreenHook(ForkDuoDeveloperRows(userID: nil)) // pre-login: no Dev log row
         Task { @MainActor in
             ForkDuoRuntime.start(reason: "app-hooks")
+            // E6 stage fix D1: start the network path monitor now, so the Dev log and schedules see the real state on first use.
+            _ = ForkNetworkPath.shared
         }
     }
 }

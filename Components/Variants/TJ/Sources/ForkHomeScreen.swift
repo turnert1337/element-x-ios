@@ -262,8 +262,10 @@ nonisolated enum ForkKnownArtifacts {
 /// Test Round 1 (h2): the operator met Safari's "not secure" page, downloaded the profile and never found Install. One guided path:
 /// 1 make the icon, 2 Add (Safari's local-address warning explained), 3 one Open Settings step with the exact path, 4 a check.
 /// Apple's path (support.apple.com/102400, read 2026-10-30): Settings → Profile Downloaded → Install; deleted after 8 minutes.
-/// iOS has no public deep link to a downloaded profile: `openSettingsURLString` opens TJ Element's own Settings page (the
-/// undocumented `App-prefs:` scheme is not used; it can break on any release and is an App Review risk).
+/// iOS has no public deep link to a downloaded profile: `openSettingsURLString` opens TJ Element's own Settings page or, as on the
+/// iOS 27.0 simulator (E2E b6), the main Settings list, so the copy works for both (the undocumented `App-prefs:` scheme is not
+/// used; it can break on any release and is an App Review risk). The Check step opens as soon as the profile is served, so someone
+/// who goes to Settings on their own (not via Open Settings) can still finish.
 struct ForkHomeInstallFlow: Equatable {
     enum Step: Int, Comparable {
         case icon = 1
@@ -280,8 +282,8 @@ struct ForkHomeInstallFlow: Equatable {
         case upcoming
     }
 
-    static let safariLine = "Safari opens and says “This connection is not secure”: that's this iPhone talking to itself (127.0.0.1); nothing goes online. Tap Continue, then Allow, then Close, then Done."
-    static let settingsLanding = "Settings opens on TJ Element's page. Tap back (top left) until you're on the main Settings list."
+    static let safariLine = "Safari opens and says “This connection is not secure”: that's this iPhone talking to itself (127.0.0.1); nothing goes online. Tap Continue, then Allow, then Close, then tap ✓ (top left)."
+    static let settingsLanding = "If Settings opens on TJ Element's page, tap back (top left) until you're on the main Settings list (your name at the top)."
     static let settingsPath = "Tap Profile Downloaded (just under your name), then Install (top right), enter your passcode and tap Install again."
     static let fallbackPath = "Not there? General → VPN & Device Management → the TJ Element profile → Install."
     static let timeLimit = "Install within 8 minutes or iOS deletes the download (then tap Add to Home Screen again). If Stolen Device Protection blocks it, install at home."
@@ -295,6 +297,8 @@ struct ForkHomeInstallFlow: Equatable {
     func state(of item: Step) -> State {
         if item == .icon { return step == .add ? .active : .done }
         if item < step { return .done }
+        // Step 4 is open from step 3 on: Open Settings is a shortcut, not a gate.
+        if item == .check, step == .settings { return .active }
         return item == step ? .active : .upcoming
     }
 

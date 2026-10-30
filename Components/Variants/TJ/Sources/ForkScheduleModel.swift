@@ -65,7 +65,7 @@ final class ForkScheduleModel {
         } catch is CancellationError {
         } catch let error as URLError where error.code == .cancelled {
         } catch {
-            if room == nil { loadState = .failed(Self.words(for: error, offline: ForkNetworkPath.shared.isOffline)) }
+            if room == nil { loadState = .failed(Self.words(for: error, network: ForkNetworkPath.shared.state)) }
         }
     }
 
@@ -114,7 +114,7 @@ final class ForkScheduleModel {
             await refresh()
             return true
         } catch {
-            writeError = Self.words(for: error, offline: ForkNetworkPath.shared.isOffline)
+            writeError = Self.words(for: error, network: ForkNetworkPath.shared.state)
             return false
         }
     }
@@ -125,9 +125,10 @@ final class ForkScheduleModel {
         Int((Date().timeIntervalSince1970 * 1000).rounded())
     }
 
-    /// `offline`: the network path is down (E6 D1), which beats whatever the request error says.
-    static func words(for error: Error, offline: Bool = false) -> String {
-        if offline, error is URLError { return "This iPhone is offline." }
+    /// `network`: the path's state (E6 D1); while it's down (offline, or this app denied mobile data / Wi-Fi) that beats whatever the
+    /// request error says.
+    static func words(for error: Error, network: ForkNetworkReach.State = .online) -> String {
+        if network.isOffline, error is URLError { return network.message }
         return switch error {
         case ForkMatrixREST.RESTError.forbidden:
             "This chat isn't set up for schedules yet. Ask the workshop to set it up."

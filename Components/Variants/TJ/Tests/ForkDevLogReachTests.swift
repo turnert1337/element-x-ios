@@ -312,7 +312,77 @@ struct ForkDevLogOfflineTests {
 
     @Test
     func requestsFailFastInsteadOfWaitingForConnectivity() async {
-        #expect(ForkMatrixREST.waitsForConnectivity == false)
+        // The session the client really uses (not a constant beside it): no waiting for a network, 20 s per request.
+        let policy = await ForkDevLogReachTests.rest().connectivityPolicy()
+        #expect(policy.waitsForConnectivity == false)
+        #expect(policy.requestTimeout == 20)
+    }
+
+    // MARK: - E6 stage fix (D1 review): denied ≠ offline, path order, no leaked watchers
+
+    @Test
+    func deniedPathsNameThePermissionNotOffline() {
+        #expect(ForkNetworkReach.state(status: .unsatisfied, reason: .cellularDenied) == .cellularDenied)
+        #expect(ForkNetworkReach.state(status: .unsatisfied, reason: .wifiDenied) == .wifiDenied)
+        #expect(ForkNetworkReach.state(status: .unsatisfied, reason: .notAvailable) == .offline)
+        #expect(ForkNetworkReach.state(status: .satisfied, reason: .notAvailable) == .online)
+        #expect(ForkNetworkReach.state(status: .requiresConnection, reason: .notAvailable) == .online)
+        #expect(ForkNetworkReach.State.cellularDenied.message == "TJ Element isn't allowed to use mobile data. Check Settings → TJ Element.")
+        #expect(ForkNetworkReach.State.wifiDenied.message == "TJ Element isn't allowed to use Wi-Fi. Check Settings → TJ Element.")
+        #expect(ForkNetworkReach.State.offline.message == "This iPhone is offline.")
+    }
+
+    @Test
+    func mobileDataDeniedSaysSoInsteadOfOffline() async {
+        ForkScriptedServer.reset([.respond(200, "{\"room_id\":\"!dev\"}"), .respond(200, ForkDevLogReachTests.stateJSON)])
+        let network = ForkNetworkPath(monitoring: false)
+        network.update(.cellularDenied)
+        let model = ForkDevLogModel(rest: ForkDevLogReachTests.rest(), cacheBase: ForkDevLogReachTests.tempBase(), network: network)
+        #expect(await model.refresh() == nil)
+        #expect(model.problem == "TJ Element isn't allowed to use mobile data. Check Settings → TJ Element.")
+        #expect(model.waitingLine == "Retries when TJ Element is allowed to use the network.")
+        network.update(.offline)
+        await model.networkChanged(offline: true)
+        #expect(model.problem == "This iPhone is offline.")
+        #expect(model.waitingLine == "Retries when this iPhone is back online.")
+    }
+
+    @Test
+    func scheduleWordsNameADeniedPermission() {
+        #expect(ForkScheduleModel.words(for: URLError(.timedOut), network: .wifiDenied) == "TJ Element isn't allowed to use Wi-Fi. Check Settings → TJ Element.")
+        #expect(ForkScheduleModel.words(for: URLError(.timedOut), network: .offline) == "This iPhone is offline.")
+        #expect(ForkScheduleModel.words(for: URLError(.notConnectedToInternet), network: .online) == "This iPhone is offline.")
+    }
+
+    @Test
+    func pathChangesArriveInTheOrderTheyHappened() async {
+        let network = ForkNetworkPath(monitoring: false)
+        let changes = network.changes()
+        var iterator = changes.makeAsyncIterator()
+        network.update(.offline)
+        #expect(await iterator.next() == .offline)
+        network.update(.cellularDenied)
+        #expect(await iterator.next() == .cellularDenied)
+        network.update(.online)
+        #expect(await iterator.next() == .online)
+        #expect(network.state == .online)
+    }
+
+    @Test
+    func aDroppedModelStopsWatchingThePath() async throws {
+        let network = ForkNetworkPath(monitoring: false)
+        network.update(.offline) // the poll ends at once: no request, nothing scripted needed
+        var model: ForkDevLogModel? = ForkDevLogModel(rest: ForkDevLogReachTests.rest(), cacheBase: ForkDevLogReachTests.tempBase(), network: network)
+        weak let dropped = model
+        model?.appeared()
+        #expect(network.observerCount == 1)
+        try await Task.sleep(for: .milliseconds(300))
+        model = nil
+        for _ in 0..<60 where dropped != nil || network.observerCount > 0 {
+            try await Task.sleep(for: .milliseconds(50))
+        }
+        #expect(dropped == nil)
+        #expect(network.observerCount == 0) // the model's path task was cancelled with it
     }
 }
 
@@ -343,11 +413,98 @@ struct ForkDevLogMoneyTests {
     }
 
     @Test
-    func deliveredTimePrefersDeliveredTS() {
+    func deliveredTimeComesOnlyFromDeliveredTS() {
         #expect(Self.ticket("T-1", delivered: 1_793_314_371_739).deliveredMS == 1_793_314_371_739)
-        #expect(Self.ticket("T-2", updated: 1_793_330_438_837).deliveredMS == 1_793_330_438_837)
+        // updated_ts is when the ticket last changed, not when it was delivered: no delivery time without delivered_ts.
+        #expect(Self.ticket("T-2", updated: 1_793_330_438_837).deliveredMS == nil)
         #expect(Self.ticket("T-3", stage: "processing").deliveredMS == nil)
-        #expect(Self.ticket("T-4", stage: "failed").deliveredMS == nil)
+        #expect(Self.ticket("T-4", stage: "failed", delivered: 1_793_314_371_739).deliveredMS == nil)
+        let now = Date(timeIntervalSince1970: 1_793_340_000)
+        #expect(ForkDevLogFormat.historyWhen(Self.ticket("T-1", delivered: 1_793_314_371_739), now: now)?.hasPrefix("Delivered ") == true)
+        #expect(ForkDevLogFormat.historyWhen(Self.ticket("T-2", updated: 1_793_330_438_837), now: now) == "Finished")
+        let failed = ForkDevLogFormat.historyWhen(Self.ticket("T-4", stage: "failed", updated: 1_793_330_438_837), now: now)
+        #expect(failed?.hasPrefix("Updated ") == true)
+        #expect(failed?.contains("Delivered") == false)
+    }
+
+    @Test
+    func headerSaysEstimateWhenAnySummedCostIsOne() throws {
+        let content = ForkJSON.object(["v": .number(1), "id": .string("T-E"), "title": .string("E"), "stage": .string("delivered"),
+                                       "cost": .object(["total_usd_micros": .number(1_041_830), "api_rate_usd_micros": .number(82_377_554),
+                                                        "total_is_estimate": .bool(true)])])
+        let estimated = try #require(ForkDevLogTicket.parse(content: content))
+        let measured = Self.ticket("M", micros: 318_984, apiMicros: 29_962_136)
+        #expect(ForkDevLogTotals(tickets: [estimated, measured]).headline == "Total so far: $1.36 est. of your plan · $112.34 API-rate")
+        #expect(ForkDevLogTotals(tickets: [measured]).headline == "Total so far: $0.32 of your plan · $29.96 API-rate")
+    }
+
+    // MARK: - E6 stage fix (S-B1): hostile numbers never crash the Dev log
+
+    static func rawTicket(_ id: String, cost: String) throws -> ForkDevLogTicket {
+        let json = #"{"v":1,"id":"\#(id)","title":"\#(id)","stage":"delivered","cost":\#(cost)}"#
+        return try JSONDecoder().decode(ForkDevLogTicket.self, from: Data(json.utf8))
+    }
+
+    @Test(arguments: ["nan", "NaN", "inf", "-inf", "infinity", "1e20", "-1e20"])
+    func hostileLegacyDollarsAreDroppedNotTrapped(_ text: String) throws {
+        let issues = ForkDecodeIssues()
+        let content = ForkJSON.object(["v": .number(1), "id": .string("T-H"), "title": .string("H"), "stage": .string("delivered"),
+                                       "cost": .object(["total_usd": .string(text)])])
+        let ticket = try #require(ForkDevLogTicket.parse(content: content, issues: issues))
+        #expect(ticket.cost?.totalMicros == nil)
+        #expect(ticket.cost?.totalUSD == nil) // the receipt never shows "$nan" or a number the list can't sum
+        #expect(ForkDevLogTotals(tickets: [ticket]).headline == nil)
+        #expect(ForkDevLogFormat.historyCost(ticket) == nil)
+        #expect(issues.paths == ["cost.total_usd"])
+    }
+
+    @Test
+    func aSumThatWouldOverflowDropsTheValueInsteadOfTrapping() throws {
+        let big = try Self.rawTicket("A", cost: #"{"total_usd_micros":9223372036854775797,"api_rate_usd_micros":9223372036854775000}"#)
+        let bigger = try Self.rawTicket("B", cost: #"{"total_usd_micros":9223372036854775787,"api_rate_usd_micros":9223372036854775000}"#)
+        #expect(big.cost?.totalMicros == 9_223_372_036_854_775_797)
+        let totals = ForkDevLogTotals(tickets: [big, bigger, Self.ticket("C", micros: 1_000_000)])
+        #expect(totals.planMicros == 9_223_372_036_854_775_797) // B and C would overflow: dropped
+        #expect(totals.apiRateMicros == 9_223_372_036_854_775_000)
+        #expect(totals.headline == "Total so far: $9,223,372,036,854.78 of your plan · $9,223,372,036,854.78 API-rate")
+        let negative = try Self.rawTicket("N", cost: #"{"total_usd_micros":-9223372036854775808}"#)
+        #expect(ForkDevLogFormat.money(micros: negative.cost?.totalMicros ?? 0) == "-$9,223,372,036,854.78")
+        #expect(ForkDevLogTotals(tickets: [negative, Self.ticket("D", micros: -1)]).planMicros == Int.min)
+    }
+
+    @Test
+    func wrongTypesAreReportedNotSilentlyDropped() throws {
+        let issues = ForkDecodeIssues()
+        let content = ForkJSON.object(["v": .number(1), "id": .string("T-W"), "title": .string("W"), "stage": .string("delivered"),
+                                       "delivered_ts": .string("yesterday"),
+                                       "build": .object(["number": .number(202_610_300_709), "code": .string("E6")]),
+                                       "cost": .object(["total_usd_micros": .string("1000"), "api_rate_usd_micros": .bool(true),
+                                                        "total_usd": .object([:])])])
+        let ticket = try #require(ForkDevLogTicket.parse(content: content, issues: issues))
+        #expect(ticket.build?.code == "E6")      // the good fields still show
+        #expect(ticket.build?.number == nil)
+        #expect(ticket.cost?.totalMicros == nil)
+        #expect(Set(issues.paths) == ["delivered_ts", "build.number", "cost.total_usd_micros", "cost.api_rate_usd_micros", "cost.total_usd"])
+
+        let blockIssues = ForkDecodeIssues()
+        let badBlock = ForkJSON.object(["v": .number(1), "id": .string("T-B"), "title": .string("B"), "stage": .string("building"),
+                                        "build": .string("E6")])
+        #expect(try #require(ForkDevLogTicket.parse(content: badBlock, issues: blockIssues)).build?.code == nil)
+        #expect(blockIssues.paths == ["build"])
+
+        // A block that can't decode at all still drops the ticket (as before), but says so.
+        let costIssues = ForkDecodeIssues()
+        let badCost = ForkJSON.object(["v": .number(1), "id": .string("T-C"), "title": .string("C"), "stage": .string("building"),
+                                       "cost": .string("$4.21")])
+        #expect(ForkDevLogTicket.parse(content: badCost, issues: costIssues) == nil)
+        #expect(costIssues.paths == ["cost"])
+
+        // Absent or null fields are not problems.
+        let quiet = ForkDecodeIssues()
+        let plain = ForkJSON.object(["v": .number(1), "id": .string("T-Q"), "title": .string("Q"), "stage": .string("building"),
+                                     "delivered_ts": .null, "build": .null, "cost": .object(["total_usd_micros": .null])])
+        #expect(ForkDevLogTicket.parse(content: plain, issues: quiet) != nil)
+        #expect(quiet.paths.isEmpty)
     }
 
     @Test
@@ -384,6 +541,11 @@ struct ForkDevLogMoneyTests {
         #expect(ForkDevLogFormat.money(micros: 1_005_000) == "$1.01")     // half a cent rounds up
         #expect(ForkDevLogFormat.money(micros: 1_004_999) == "$1.00")
         #expect(ForkDevLogFormat.money(micros: 12_345_678_900) == "$12,345.68")
+        // Non-zero but under a ten-thousandth of a dollar: never "$0.0000".
+        #expect(ForkDevLogFormat.money(micros: 1) == "<$0.0001")
+        #expect(ForkDevLogFormat.money(micros: 49) == "<$0.0001")
+        #expect(ForkDevLogFormat.money(micros: 50) == "$0.0001")
+        #expect(ForkDevLogFormat.money(micros: -1) == ">-$0.0001")
     }
 
     @Test

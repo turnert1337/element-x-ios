@@ -509,7 +509,7 @@ struct ForkScheduleOnceTests {
         #expect(draft.repeatRule == .once)
         #expect(draft.minute == 9 * 60)
         #expect(draft.date == ForkCivilDate(year: 2026, month: 10, day: 31)) // 9:00 today has passed: the default rolls (the old trap)
-        draft.setTime(minute: 11 * 60 + 17, now: Self.roundOneNow, dateTouched: false)
+        draft.setTime(minute: 11 * 60 + 17, now: Self.roundOneNow, dateTouched: false, isNew: true)
         #expect(draft.date == ForkCivilDate(year: 2026, month: 10, day: 30))
         #expect(draft.dtstart == "2026-10-30T11:17:00")
         #expect(draft.preview(now: Self.roundOneNow).map(ForkScheduleTime.utcString) == ["2026-10-30T16:17:00Z"])
@@ -519,7 +519,7 @@ struct ForkScheduleOnceTests {
     @Test
     func aTimeAlreadyPassedTodayMeansTomorrow() {
         var draft = ForkScheduleDraft.new(tz: Self.chicago, now: Self.roundOneNow, threadRoot: nil)
-        draft.setTime(minute: 8 * 60, now: Self.roundOneNow, dateTouched: false)
+        draft.setTime(minute: 8 * 60, now: Self.roundOneNow, dateTouched: false, isNew: true)
         #expect(draft.dtstart == "2026-10-31T08:00:00")
     }
 
@@ -527,11 +527,11 @@ struct ForkScheduleOnceTests {
     func aDateTheUserPickedIsKept() {
         var draft = ForkScheduleDraft.new(tz: Self.chicago, now: Self.roundOneNow, threadRoot: nil)
         draft.date = ForkCivilDate(year: 2026, month: 11, day: 3)
-        draft.setTime(minute: 8 * 60, now: Self.roundOneNow, dateTouched: true)
+        draft.setTime(minute: 8 * 60, now: Self.roundOneNow, dateTouched: true, isNew: true)
         #expect(draft.dtstart == "2026-11-03T08:00:00")
         // ...even when that date plus time is in the past: then saving is refused instead of guessing.
         draft.date = ForkCivilDate(year: 2026, month: 10, day: 30)
-        draft.setTime(minute: 11 * 60, now: Self.roundOneNow, dateTouched: true)
+        draft.setTime(minute: 11 * 60, now: Self.roundOneNow, dateTouched: true, isNew: true)
         #expect(draft.dtstart == "2026-10-30T11:00:00")
         #expect(draft.timingProblem(now: Self.roundOneNow) == .inPast)
     }
@@ -540,7 +540,7 @@ struct ForkScheduleOnceTests {
     func repeatingRulesAlsoStartAtTheNextOccurrence() {
         var draft = ForkScheduleDraft.new(tz: Self.chicago, now: Self.roundOneNow, threadRoot: nil)
         draft.repeatRule = .daily
-        draft.setTime(minute: 11 * 60 + 17, now: Self.roundOneNow, dateTouched: false)
+        draft.setTime(minute: 11 * 60 + 17, now: Self.roundOneNow, dateTouched: false, isNew: true)
         #expect(draft.preview(now: Self.roundOneNow, count: 1).map(ForkScheduleTime.utcString) == ["2026-10-30T16:17:00Z"])
     }
 
@@ -549,11 +549,61 @@ struct ForkScheduleOnceTests {
         var draft = ForkScheduleDraft.new(sid: "t-0000", tz: Self.chicago, today: ForkCivilDate(year: 2026, month: 10, day: 30), threadRoot: nil)
         draft.minute = 11 * 60 + 17
         #expect(draft.timingProblem(now: Self.roundOneNow) == nil)                                       // 60 s ahead
-        #expect(draft.timingProblem(now: ForkScheduleFixtures.date("2026-10-30T16:16:45Z")) == .inPast) // 15 s: the relay may not see it in time
+        #expect(draft.timingProblem(now: ForkScheduleFixtures.date("2026-10-30T16:16:45Z")) == .tooSoon) // 15 s: the relay may not see it in time
+        #expect(draft.timingProblem(now: ForkScheduleFixtures.date("2026-10-30T16:17:00Z")) == .inPast)  // exactly now has passed
         #expect(draft.timingProblem(now: ForkScheduleFixtures.date("2026-10-30T16:18:00Z")) == .inPast)
         draft.repeatRule = .daily
         #expect(draft.timingProblem(now: ForkScheduleFixtures.date("2026-10-30T16:18:00Z")) == nil)
         #expect(ForkScheduleUI.words(.inPast) == "That time has passed. Pick a later time or date.")
+    }
+
+    @Test
+    func tooSoonIsNotCalledPast() {
+        // E6 review S1: 15–29 s ahead the summary says "Fires in under a minute", so the refusal can't say the time has passed.
+        var draft = ForkScheduleDraft.new(sid: "t-0000", tz: Self.chicago, today: ForkCivilDate(year: 2026, month: 10, day: 30), threadRoot: nil)
+        draft.minute = 11 * 60 + 17
+        let fifteenAhead = ForkScheduleFixtures.date("2026-10-30T16:16:45Z")
+        #expect(ForkScheduleText.countdown(to: ForkScheduleFixtures.date("2026-10-30T16:17:00Z"), now: fifteenAhead, zone: Self.zone) == "Fires in under a minute")
+        #expect(draft.timingProblem(now: fifteenAhead) == .tooSoon)
+        #expect(ForkScheduleUI.words(.tooSoon) == "Pick a time at least a minute from now.")
+        #expect(ForkScheduleDraft.Problem.tooSoon.isTiming)
+        #expect(ForkScheduleDraft.Problem.inPast.isTiming)
+        #expect(!ForkScheduleDraft.Problem.noTitle.isTiming)
+    }
+
+    @Test
+    func editingARunningRepeatKeepsItsStart() throws {
+        // E6 review P-B1: a biweekly-Monday rule made on Mon 2026-10-19, edited on Fri 2026-10-30 (date untouched, the normal state for a
+        // running schedule). Moving its start to "the next 10:00" would shift which Mondays it fires on.
+        let friday = ForkScheduleFixtures.date("2026-10-30T16:16:00Z")
+        for rrule in ["FREQ=WEEKLY;INTERVAL=2;BYDAY=MO;COUNT=10", "FREQ=WEEKLY;INTERVAL=2;BYDAY=MO;UNTIL=20261228T000000Z"] {
+            let content = ForkJSON.object(["v": .number(1), "title": .string("Gym"), "enabled": .bool(true), "tz": .string(Self.chicago),
+                                           "dtstart": .string("2026-10-19T09:00:00"), "rrule": .string(rrule),
+                                           "action": .object(["kind": .string("message"), "brief": .string("go")])])
+            var draft = try #require(ForkScheduleDraft(sid: "gym-abcd", content: content))
+            draft.setTime(minute: 10 * 60, now: friday, dateTouched: false, isNew: false)
+            #expect(draft.dtstart == "2026-10-19T10:00:00", "\(rrule)")
+            let saved = draft.content(updatedTS: 1)
+            #expect(saved["dtstart"]?.string == "2026-10-19T10:00:00", "\(rrule)")
+            #expect(saved["rrule"]?.string == rrule, "\(rrule)")
+            // Still the same Mondays: 2026-11-02 (10:00 CST = 16:00Z), not 2026-11-09.
+            #expect(draft.preview(now: friday, count: 1).map(ForkScheduleTime.utcString) == ["2026-11-02T16:00:00Z"], "\(rrule)")
+        }
+    }
+
+    @Test
+    func anExistingOnceThatPassedStillRollsWhenTheTimeChanges() throws {
+        let content = ForkJSON.object(["v": .number(1), "title": .string("Call"), "enabled": .bool(true), "tz": .string(Self.chicago),
+                                       "dtstart": .string("2026-10-20T09:00:00"),
+                                       "action": .object(["kind": .string("message"), "brief": .string("call")])])
+        var draft = try #require(ForkScheduleDraft(sid: "call-abcd", content: content))
+        draft.setTime(minute: 11 * 60 + 17, now: Self.roundOneNow, dateTouched: false, isNew: false)
+        #expect(draft.dtstart == "2026-10-30T11:17:00")
+        // A brand-new repeating draft still starts at the next occurrence.
+        var fresh = ForkScheduleDraft.new(tz: Self.chicago, now: Self.roundOneNow, threadRoot: nil)
+        fresh.repeatRule = .weekdays
+        fresh.setTime(minute: 8 * 60, now: Self.roundOneNow, dateTouched: false, isNew: true)
+        #expect(fresh.dtstart == "2026-10-31T08:00:00")
     }
 
     @Test

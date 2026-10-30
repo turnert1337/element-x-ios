@@ -43,10 +43,6 @@ actor ForkMatrixREST {
     private var pinnedHost: String?
     private(set) var isExpired = false
 
-    /// E6 D1: fail at once when there's no network (the default for an ephemeral session, stated so nobody flips it): the Dev
-    /// log learns "offline" from `ForkNetworkPath`, not from a request that waits and then times out.
-    static let waitsForConnectivity = false
-
     static var userAgent: String {
         "TJElement/\(ForkBuildInfo.bundleVersion) (iOS; artifacts)"
     }
@@ -61,7 +57,9 @@ actor ForkMatrixREST {
         configuration.requestCachePolicy = .reloadIgnoringLocalCacheData
         configuration.httpCookieAcceptPolicy = .never
         configuration.httpShouldSetCookies = false
-        configuration.waitsForConnectivity = Self.waitsForConnectivity
+        // E6 D1: fail at once when there's no network (the default for an ephemeral session, stated so nobody flips it): the Dev
+        // log learns "offline" from `ForkNetworkPath`, not from a request that waits and then times out.
+        configuration.waitsForConnectivity = false
         configuration.timeoutIntervalForRequest = 20
         configuration.timeoutIntervalForResource = 120
         session = URLSession(configuration: configuration, delegate: ForkRedirectGuard(), delegateQueue: nil)
@@ -81,6 +79,11 @@ actor ForkMatrixREST {
     static func signedInUserIDs() -> Set<String> {
         let keychain = KeychainController(service: .sessions, accessGroup: InfoPlistReader.main.keychainAccessGroupIdentifier)
         return Set(keychain.restorationTokens().map(\.userID))
+    }
+
+    /// What the live session does without a network (read from the session itself, for the tests).
+    func connectivityPolicy() -> (waitsForConnectivity: Bool, requestTimeout: TimeInterval) {
+        (session.configuration.waitsForConnectivity, session.configuration.timeoutIntervalForRequest)
     }
 
     /// The homeserver host this client is pinned to (nil before the first credentials read). For messages only.
@@ -245,56 +248,113 @@ nonisolated final class ForkRedirectGuard: NSObject, URLSessionTaskDelegate, Sen
 // MARK: - Network path (E6 D1)
 
 nonisolated enum ForkNetworkReach {
+    /// Why requests can't go out right now, if they can't.
+    enum State: Equatable, Sendable {
+        case online
+        case offline
+        /// Settings → TJ Element → Mobile Data is off (`NWPath.UnsatisfiedReason.cellularDenied`): the iPhone itself may be online.
+        case cellularDenied
+        /// Per-app Wi-Fi (WLAN) access denied.
+        case wifiDenied
+
+        var isOffline: Bool { self != .online }
+
+        var message: String {
+            switch self {
+            case .online: ""
+            case .offline: "This iPhone is offline."
+            case .cellularDenied: "TJ Element isn't allowed to use mobile data. Check Settings → TJ Element."
+            case .wifiDenied: "TJ Element isn't allowed to use Wi-Fi. Check Settings → TJ Element."
+            }
+        }
+
+        var waitLine: String {
+            switch self {
+            case .online, .offline: "Retries when this iPhone is back online."
+            case .cellularDenied, .wifiDenied: "Retries when TJ Element is allowed to use the network."
+            }
+        }
+    }
+
     /// `.requiresConnection` (e.g. VPN on demand) isn't offline: a request may bring the link up.
     static func isOffline(_ status: NWPath.Status) -> Bool {
         status == .unsatisfied
+    }
+
+    /// E6 stage fix D1: a path that's unsatisfied because this app is denied mobile data or Wi-Fi says so, not "offline".
+    static func state(status: NWPath.Status, reason: NWPath.UnsatisfiedReason) -> State {
+        guard isOffline(status) else { return .online }
+        switch reason {
+        case .cellularDenied: return .cellularDenied
+        case .wifiDenied: return .wifiDenied
+        default: return .offline
+        }
     }
 }
 
 /// The device's network path from `NWPathMonitor`: `isOffline` flips the moment iOS knows (Airplane Mode, no Wi-Fi or cellular),
 /// before any request could time out. Test Round 1 (c2) read "matrix.autopute.ai took too long to answer" in Airplane Mode.
+/// E6 stage fix: the monitor runs on the main queue and each update is applied synchronously there (`MainActor.assumeIsolated`), so
+/// updates land in the order iOS sent them (a Task per update could reorder them). `shared` starts at app launch (`AppHooks.setUp`),
+/// so `isOffline` is already right when the Dev log or a schedule first asks.
+@MainActor
 @Observable
 final class ForkNetworkPath {
     static let shared = ForkNetworkPath(monitoring: true)
 
-    private(set) var isOffline = false
+    private(set) var state: ForkNetworkReach.State = .online
     @ObservationIgnored private var monitor: NWPathMonitor?
-    @ObservationIgnored private var continuations: [UUID: AsyncStream<Bool>.Continuation] = [:]
+    @ObservationIgnored private var continuations: [UUID: AsyncStream<ForkNetworkReach.State>.Continuation] = [:]
 
-    /// `monitoring: false` is the test seam: nothing watches the real path; `update(offline:)` drives it.
+    var isOffline: Bool { state.isOffline }
+
+    /// How many `changes()` streams are open (tests: a dropped Dev log model must close its own).
+    var observerCount: Int { continuations.count }
+
+    /// `monitoring: false` is the test seam: nothing watches the real path; `update(_:)` drives it.
     init(monitoring: Bool) {
         guard monitoring else { return }
         let monitor = NWPathMonitor()
-        // The singleton lives for the app's lifetime, so the strong capture is fine; the handler runs on the monitor's queue.
-        monitor.pathUpdateHandler = Self.handler { offline in
-            Task { @MainActor in self.update(offline: offline) }
+        // Weak: a non-shared instance must not keep itself alive through its own monitor.
+        monitor.pathUpdateHandler = Self.handler { [weak self] state in
+            MainActor.assumeIsolated { self?.update(state) }
         }
-        monitor.start(queue: DispatchQueue(label: "tj.network-path"))
+        monitor.start(queue: .main)
         self.monitor = monitor
     }
 
-    func update(offline: Bool) {
-        guard offline != isOffline else { return }
-        isOffline = offline
-        MXLog.info("TJ network path: \(offline ? "offline" : "online")")
+    isolated deinit {
+        monitor?.cancel()
+        for continuation in continuations.values { continuation.finish() }
+    }
+
+    func update(_ newState: ForkNetworkReach.State) {
+        guard newState != state else { return }
+        state = newState
+        MXLog.info("TJ network path: \(newState)")
         for continuation in continuations.values {
-            continuation.yield(offline)
+            continuation.yield(newState)
         }
     }
 
-    /// Each change of `isOffline` from now on.
-    func changes() -> AsyncStream<Bool> {
+    /// Test convenience: plain offline / online.
+    func update(offline: Bool) {
+        update(offline ? .offline : .online)
+    }
+
+    /// Each change of `state` from now on.
+    func changes() -> AsyncStream<ForkNetworkReach.State> {
         let id = UUID()
-        let (stream, continuation) = AsyncStream<Bool>.makeStream(bufferingPolicy: .bufferingNewest(1))
+        let (stream, continuation) = AsyncStream<ForkNetworkReach.State>.makeStream(bufferingPolicy: .bufferingNewest(1))
         continuations[id] = continuation
-        continuation.onTermination = { _ in
-            Task { @MainActor in self.continuations[id] = nil }
+        continuation.onTermination = { [weak self] _ in
+            Task { @MainActor in self?.continuations[id] = nil }
         }
         return stream
     }
 
-    /// Built outside the main actor: NWPathMonitor calls it on its own queue.
-    private nonisolated static func handler(_ sink: @escaping @Sendable (Bool) -> Void) -> @Sendable (NWPath) -> Void {
-        { path in sink(ForkNetworkReach.isOffline(path.status)) }
+    /// Built outside the main actor so the closure isn't main-actor isolated by inference; the monitor calls it on `.main`.
+    private nonisolated static func handler(_ sink: @escaping @Sendable (ForkNetworkReach.State) -> Void) -> @Sendable (NWPath) -> Void {
+        { path in sink(ForkNetworkReach.state(status: path.status, reason: path.unsatisfiedReason)) }
     }
 }

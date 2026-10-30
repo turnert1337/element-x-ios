@@ -14,6 +14,10 @@ import SwiftUI
 
 nonisolated enum ForkDevLogProblem: Equatable, Sendable {
     case offline
+    /// E6 stage fix D1: the path is down because TJ Element isn't allowed mobile data / Wi-Fi (Settings → TJ Element), not because
+    /// the iPhone is offline.
+    case cellularDenied
+    case wifiDenied
     case connectionLost
     case timedOut
     case cannotFindHost
@@ -74,13 +78,25 @@ nonisolated enum ForkDevLogProblem: Equatable, Sendable {
         return pathOffline && error is URLError ? .offline : problem
     }
 
+    /// The problem a down network path stands for (nil while online).
+    static func from(path: ForkNetworkReach.State) -> ForkDevLogProblem? {
+        switch path {
+        case .online: nil
+        case .offline: .offline
+        case .cellularDenied: .cellularDenied
+        case .wifiDenied: .wifiDenied
+        }
+    }
+
     static func isCancellation(_ error: Error) -> Bool {
         error is CancellationError || (error as? URLError)?.code == .cancelled
     }
 
     func message(host: String) -> String {
         switch self {
-        case .offline: "This iPhone is offline."
+        case .offline: ForkNetworkReach.State.offline.message
+        case .cellularDenied: ForkNetworkReach.State.cellularDenied.message
+        case .wifiDenied: ForkNetworkReach.State.wifiDenied.message
         case .connectionLost: "The connection to \(host) dropped."
         case .timedOut: "\(host) took too long to answer."
         case .cannotFindHost: "Can't find \(host) (DNS lookup failed)."
@@ -186,6 +202,8 @@ final class ForkDevLogModel {
     private(set) var isRetrying = false
     /// E6 D1: offline per the network path; polling stops and the next path change retries.
     private(set) var isWaitingForNetwork = false
+    /// What the banner says while waiting for the path ("Retries when this iPhone is back online.").
+    private(set) var waitingLine: String?
     @ObservationIgnored let network: ForkNetworkPath
     @ObservationIgnored private var pathTask: Task<Void, Never>?
     @ObservationIgnored private var failures = 0
@@ -221,6 +239,12 @@ final class ForkDevLogModel {
 
     var totals: ForkDevLogTotals {
         ForkDevLogTotals(tickets: tickets)
+    }
+
+    /// E6 stage fix D1: a model dropped without `disappeared()` (e.g. its sheet torn down) stops polling and watching the path.
+    isolated deinit {
+        pollTask?.cancel()
+        pathTask?.cancel()
     }
 
     func ticket(id: String) -> ForkDevLogTicket? {
@@ -320,8 +344,10 @@ final class ForkDevLogModel {
     // MARK: - Private
 
     private func showOffline() {
-        let message = ForkDevLogProblem.offline.message(host: host)
+        let state = network.state == .online ? ForkNetworkReach.State.offline : network.state
+        let message = (ForkDevLogProblem.from(path: state) ?? .offline).message(host: host)
         problem = message
+        waitingLine = state.waitLine
         isWaitingForNetwork = true
         nextRetryAt = nil
         if tickets.isEmpty, phase != .notJoined { phase = .error(message) }
@@ -331,25 +357,33 @@ final class ForkDevLogModel {
         guard pathTask == nil else { return }
         let changes = network.changes()
         pathTask = Task { [weak self] in
-            for await offline in changes {
-                await self?.networkChanged(offline: offline)
+            for await state in changes {
+                guard let self else { return }
+                await networkChanged(offline: state.isOffline)
             }
         }
     }
 
+    /// The loop holds the model only while a fetch runs, never across the sleep, so a dropped model is freed (and its deinit
+    /// cancels the loop).
     private func startPolling() {
         guard pollTask == nil else { return }
         pollTask = Task { [weak self] in
             while !Task.isCancelled {
-                guard let delay = await self?.refresh() else {
-                    self?.nextRetryAt = nil
-                    return
-                }
-                guard let self else { return }
-                nextRetryAt = problem == nil ? nil : Date().addingTimeInterval(delay)
+                guard let delay = await self?.pollOnce() else { return }
                 try? await Task.sleep(for: .seconds(delay))
             }
         }
+    }
+
+    /// One poll step: fetch, then note when the next retry runs. nil stops the loop.
+    private func pollOnce() async -> TimeInterval? {
+        guard let delay = await refresh() else {
+            nextRetryAt = nil
+            return nil
+        }
+        nextRetryAt = problem == nil ? nil : Date().addingTimeInterval(delay)
+        return delay
     }
 
     private func stopPolling() {
@@ -481,7 +515,7 @@ struct ForkDevLogStatusBanner: View {
                         if model.isRetrying {
                             Text("Retrying…")
                         } else if model.isWaitingForNetwork {
-                            Text("Retries when this iPhone is back online.")
+                            Text(model.waitingLine ?? ForkNetworkReach.State.offline.waitLine)
                         } else if let next = model.nextRetryAt {
                             Text("Retrying in \(max(0, Int(next.timeIntervalSince(context.date).rounded(.up)))) s")
                         } else {
@@ -536,11 +570,7 @@ struct ForkDevLogHistoryRow: View {
             ProgressView(value: ForkDevLogFormat.fraction(ticket))
                 .tint(ticket.stage == "failed" ? .red : .accentColor)
             HStack {
-                if let delivered = ticket.deliveredMS {
-                    Text("Delivered \(ForkDevLogFormat.absolute(delivered))")
-                } else if let updated = ticket.updatedTS {
-                    Text(ForkDevLogFormat.relative(updated))
-                }
+                if let when = ForkDevLogFormat.historyWhen(ticket) { Text(when) }
                 Spacer()
                 if let build = ForkDevLogFormat.buildLine(ticket.build) { Text(build).monospacedDigit() }
             }
@@ -637,6 +667,15 @@ nonisolated enum ForkDevLogFormat {
         }
     }
 
+    /// E6 stage fix D2: "Delivered Oct 29, 2026 at 5:52 PM" only from `delivered_ts`; a delivered ticket without it says "Finished"
+    /// (no time: `updated_ts` is when it last changed, not when it was delivered); any other stage says "Updated 3 hours ago".
+    static func historyWhen(_ ticket: ForkDevLogTicket, now: Date = Date()) -> String? {
+        if let delivered = ticket.deliveredMS { return "Delivered \(absolute(delivered))" }
+        if ticket.stage == "delivered" { return "Finished" }
+        guard let updated = ticket.updatedTS else { return nil }
+        return "Updated \(relative(updated, now: now))"
+    }
+
     /// E6 D2 list row: "$0.32 plan · $29.96 API-rate" (nil without a cost block).
     static func historyCost(_ ticket: ForkDevLogTicket) -> String? {
         guard let plan = ticket.cost?.totalMicros else { return nil }
@@ -646,19 +685,21 @@ nonisolated enum ForkDevLogFormat {
         return line
     }
 
-    /// Integer micro-USD → dollars, rounding half up to the cent; `$0.0008` style for a non-zero amount under a cent (§13.7).
+    /// Integer micro-USD → dollars, rounding half up to the cent; `$0.0008` style for a non-zero amount under a cent (§13.7), and
+    /// "<$0.0001" below that, so a non-zero amount never reads "$0.0000". Total over every `Int` (Int.min included: no `abs` trap).
     static func money(micros: Int) -> String {
         let sign = micros < 0 ? "-" : ""
-        let magnitude = abs(micros)
+        let magnitude = micros.magnitude
         if magnitude > 0, magnitude < 10_000 {
             let tenThousandths = (magnitude + 50) / 100
-            if tenThousandths < 100 { return "\(sign)$0.\(String(format: "%04d", tenThousandths))" }
+            if tenThousandths == 0 { return micros < 0 ? ">-$0.0001" : "<$0.0001" }
+            if tenThousandths < 100 { return "\(sign)$0.\(String(format: "%04d", Int(tenThousandths)))" }
         }
         let cents = (magnitude + 5000) / 10_000
-        return "\(sign)$\(grouped(cents / 100)).\(String(format: "%02d", cents % 100))"
+        return "\(sign)$\(grouped(cents / 100)).\(String(format: "%02d", Int(cents % 100)))"
     }
 
-    private static func grouped(_ value: Int) -> String {
+    private static func grouped(_ value: UInt) -> String {
         var digits = String(value)
         var out = ""
         while digits.count > 3 {
@@ -673,8 +714,12 @@ nonisolated enum ForkDevLogFormat {
         return min(1, max(0, Double(ticket.progress?.done ?? 0) / Double(total)))
     }
 
-    static func relative(_ ms: Int) -> String {
-        Date(timeIntervalSince1970: TimeInterval(ms) / 1000).formatted(.relative(presentation: .named))
+    /// "3 hours ago" / "yesterday", relative to `now` (mid-sentence: it follows "Updated").
+    static func relative(_ ms: Int, now: Date = Date()) -> String {
+        let formatter = RelativeDateTimeFormatter()
+        formatter.dateTimeStyle = .named
+        formatter.formattingContext = .middleOfSentence
+        return formatter.localizedString(for: Date(timeIntervalSince1970: TimeInterval(ms) / 1000), relativeTo: now)
     }
 
     static func absolute(_ ms: Int) -> String {
@@ -709,18 +754,22 @@ nonisolated enum ForkDevLogFormat {
 nonisolated struct ForkDevLogTotals: Equatable, Sendable {
     let planMicros: Int?
     let apiRateMicros: Int?
+    /// Some summed plan cost is an estimate (`total_is_estimate`), so the total is too.
+    let includesEstimate: Bool
 
+    /// Never traps: an amount that would overflow the sum is left out (and logged) instead (E6 stage fix S-B1).
     init(tickets: [ForkDevLogTicket]) {
-        let plan = tickets.compactMap { $0.cost?.totalMicros }
-        let api = tickets.compactMap { $0.cost?.apiRateMicros }
-        planMicros = plan.isEmpty ? nil : plan.reduce(0, +)
-        apiRateMicros = api.isEmpty ? nil : api.reduce(0, +)
+        let priced = tickets.filter { $0.cost?.totalMicros != nil }
+        planMicros = ForkMicros.sum(priced.compactMap { $0.cost?.totalMicros }, label: "plan")
+        apiRateMicros = ForkMicros.sum(tickets.compactMap { $0.cost?.apiRateMicros }, label: "API-rate")
+        includesEstimate = priced.contains { $0.cost?.totalIsEstimate == true }
     }
 
-    /// "Total so far: $5.34 of your plan · $315.23 API-rate" (nil until some ticket has a cost).
+    /// "Total so far: $5.34 of your plan · $315.23 API-rate" ("$5.34 est." when any part is an estimate; nil until some ticket has a
+    /// cost).
     var headline: String? {
         guard let planMicros else { return nil }
-        var line = "Total so far: \(ForkDevLogFormat.money(micros: planMicros)) of your plan"
+        var line = "Total so far: \(ForkDevLogFormat.money(micros: planMicros))\(includesEstimate ? " est." : "") of your plan"
         if let apiRateMicros { line += " · \(ForkDevLogFormat.money(micros: apiRateMicros)) API-rate" }
         return line
     }

@@ -545,20 +545,18 @@ struct ForkRoomToolbar {
             Label {
                 Text(open ? "Close artifacts" : "Artifacts")
             } icon: {
-                if let badge {
-                    // E6 B1: on every bar the count is drawn into the icon in the button's own colour (the bar's tint at rest, the
-                    // accent while the zone is open). The system `.badge` is always red on iOS 26+ bars; the 27.1 vertical bar draws
-                    // neither it nor an overlay (G-H6), and original-rendering images show on both bars (build 5 F2).
-                    let look = ForkRailBadgeColors.artifacts(open: open, dark: colorScheme == .dark)
-                    Image(uiImage: ForkBadgedSymbol.image(symbol: open ? "square.stack.3d.up.fill" : "square.stack.3d.up",
-                                                          badge: badge, color: look.icon, badgeFill: look.fill, badgeText: look.text))
+                // E6 B1: on every bar the count is drawn into the icon in the button's own colour (the bar's tint at rest, the
+                // accent while the zone is open). The system `.badge` is always red on iOS 26+ bars, so it's never used here; the
+                // 27.1 vertical bar draws neither it nor an overlay (G-H6), and original-rendering images show on both bars (build 5
+                // F2). Open, with or without a count, the icon is drawn from the same colour (E6 stage fix B1).
+                if let image = ForkRailBadgeColors.artifactsIcon(open: open, badge: badge, dark: colorScheme == .dark) {
+                    Image(uiImage: image)
                 } else {
-                    Image(systemName: open ? "square.stack.3d.up.fill" : "square.stack.3d.up")
+                    Image(systemName: "square.stack.3d.up")
                 }
             }
         }
-        .modifier(ForkToolbarBadge(text: badge, enabled: ForkRailBadgeColors.artifactsUsesSystemBadge))
-        .tint(open ? .accentColor : nil)
+        .tint(open ? Color(uiColor: ForkRailBadgeColors.openTint) : nil)
         .accessibilityValue(model.timerDoneBadge ? "Timer done" : (count > 0 ? "\(count) artifacts" : ""))
         .accessibilityIdentifier("tj_room-artifacts")
     }
@@ -660,8 +658,12 @@ struct ForkRailBadge: View {
     }
 }
 
-/// E6 B1 (Test Round 1, a1): the Artifacts count badge matches its button — black (white in dark mode) at rest, the accent blue
-/// while the zone is open — never attention red.
+/// E6 B1 (Test Round 1, a1): the Artifacts count badge matches its button — black (white in dark mode) at rest, the app's accent
+/// while the zone is open — never attention red. The system `.badge` can't be recoloured on iOS 26+ bars (always red), so the
+/// Artifacts item never uses it.
+/// E6 stage fix: "open" used to be two colours: the badged icon resolved `UIColor.tintColor` against a bare trait collection
+/// (systemBlue), while the plain icon took `.tint(.accentColor)` (the near-black / near-white accent asset). `openTint` is now the one
+/// source for the open icon, its capsule and the button tint, badge or not.
 enum ForkRailBadgeColors {
     struct Look: Equatable {
         let icon: UIColor
@@ -670,12 +672,25 @@ enum ForkRailBadgeColors {
         let text: UIColor
     }
 
-    /// The system `.badge` can't be recoloured on iOS 26+ bars (always red), so the Artifacts item never uses it.
-    static let artifactsUsesSystemBadge = false
+    /// The app's accent colour (the asset `.accentColor` resolves to: colors/accent-color).
+    static var openTint: UIColor {
+        UIColor(named: "colors/accent-color") ?? .label
+    }
 
     static func artifacts(open: Bool, dark: Bool) -> Look {
-        let icon = resolved(open ? .tintColor : .label, dark: dark)
-        return Look(icon: icon, fill: icon, text: open ? .white : resolved(.systemBackground, dark: dark))
+        let icon = resolved(open ? openTint : .label, dark: dark)
+        return Look(icon: icon, fill: icon, text: resolved(.systemBackground, dark: dark))
+    }
+
+    /// The Artifacts item's icon image: the count drawn in (any state), or the open symbol in `openTint`. nil = at rest with no
+    /// count, where the bar's own template symbol follows the bar's tint.
+    static func artifactsIcon(open: Bool, badge: String?, dark: Bool) -> UIImage? {
+        let symbol = open ? "square.stack.3d.up.fill" : "square.stack.3d.up"
+        let look = artifacts(open: open, dark: dark)
+        if let badge {
+            return ForkBadgedSymbol.image(symbol: symbol, badge: badge, color: look.icon, badgeFill: look.fill, badgeText: look.text)
+        }
+        return open ? ForkBadgedSymbol.plain(symbol: symbol, color: look.icon) : nil
     }
 
     static func resolved(_ color: UIColor, dark: Bool) -> UIColor {

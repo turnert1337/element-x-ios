@@ -399,9 +399,16 @@ nonisolated struct ForkScheduleDraft: Equatable, Sendable {
         case messageTooLong
         case noDays
         case tooBig
-        /// E6 S1: a Once at (or within `ForkScheduleOnce.minimumLead` of) the current time.
+        /// E6 S1: a Once at or before the current time.
         case inPast
+        /// E6 stage fix S1: a Once less than `ForkScheduleOnce.minimumLead` ahead (it hasn't passed, so it isn't `inPast`).
+        case tooSoon
         case rule(ForkScheduleError)
+
+        /// Depends on the clock (shown in red; re-checked at save).
+        var isTiming: Bool {
+            self == .inPast || self == .tooSoon
+        }
     }
 
     /// A new schedule's sid is set at its first save, from the title (`makeSID`).
@@ -577,10 +584,12 @@ nonisolated extension ForkScheduleDraft {
         return new(sid: "", tz: tz, today: ForkScheduleOnce.nextDate(minute: 9 * 60, now: now, zone: zone), threadRoot: threadRoot)
     }
 
-    /// The time picker: with the date untouched the date follows the time to its next occurrence.
-    mutating func setTime(minute: Int, now: Date, dateTouched: Bool) {
+    /// The time picker: with the date untouched the date follows the time to its next occurrence, but only for a Once or a
+    /// brand-new schedule. An existing repeating schedule keeps its start date (E6 stage fix P-B1): its dtstart anchors which
+    /// days an INTERVAL/BYDAY rule fires on and where COUNT/UNTIL count from, so moving it would silently change the schedule.
+    mutating func setTime(minute: Int, now: Date, dateTouched: Bool, isNew: Bool) {
         self.minute = minute
-        guard !dateTouched, let zone = try? ForkScheduleTime.zone(tz) else { return }
+        guard !dateTouched, repeatRule == .once || isNew, let zone = try? ForkScheduleTime.zone(tz) else { return }
         date = ForkScheduleOnce.nextDate(minute: minute, now: now, zone: zone)
     }
 
@@ -589,11 +598,13 @@ nonisolated extension ForkScheduleDraft {
         (try? ForkScheduleTime.zone(tz)).map { ForkScheduleOnce.instant(date: date, minute: minute, zone: $0) }
     }
 
-    /// `.inPast` for a Once that has passed or is seconds away. Separate from `problems()` because it depends on the clock and
-    /// must not block Turn off / Delete on an old schedule.
+    /// `.inPast` for a Once that has passed, `.tooSoon` for one seconds away. Separate from `problems()` because it depends on the
+    /// clock and must not block Turn off / Delete on an old schedule.
     func timingProblem(now: Date) -> Problem? {
         guard repeatRule == .once, let start = startInstant else { return nil }
-        return start.timeIntervalSince(now) < ForkScheduleOnce.minimumLead ? .inPast : nil
+        let lead = start.timeIntervalSince(now)
+        if lead <= 0 { return .inPast }
+        return lead < ForkScheduleOnce.minimumLead ? .tooSoon : nil
     }
 }
 

@@ -191,6 +191,8 @@ struct ForkHomeInstallFlowTests {
         flow.profileServed()
         #expect(flow.state(of: .add) == .done)
         #expect(flow.state(of: .settings) == .active)
+        // E6 review H1: someone who goes to Settings by themselves (not via our button) can still finish.
+        #expect(flow.state(of: .check) == .active)
         flow.openedSettings()
         #expect(flow.state(of: .settings) == .done)
         #expect(flow.state(of: .check) == .active)
@@ -206,6 +208,17 @@ struct ForkHomeInstallFlowTests {
         #expect(ForkHomeInstallFlow.settingsPath.contains("Profile Downloaded"))
         #expect(ForkHomeInstallFlow.settingsPath.contains("Install"))
         #expect(ForkHomeInstallFlow.fallbackPath.contains("General → VPN & Device Management"))
-        #expect(ForkHomeInstallFlow.settingsURL == URL(string: UIApplication.openSettingsURLString))
+        // The public settings URL (no App-prefs: deep link), spelled as iOS defines it.
+        #expect(ForkHomeInstallFlow.settingsURL?.absoluteString == "app-settings:")
+    }
+
+    @Test
+    func copyMatchesWhatIOS27Shows() {
+        // E2E b6 H1-a: the Safari view's dismiss control is a ✓ glyph at top left; there is no word "Done" on screen.
+        #expect(ForkHomeInstallFlow.safariLine.hasSuffix("Tap Continue, then Allow, then Close, then tap ✓ (top left)."))
+        #expect(!ForkHomeInstallFlow.safariLine.contains("then Done"))
+        // E2E b6 H1-b: on the 27.0 sim Settings opened on its main list, not TJ Element's page: the copy must be right either way.
+        #expect(ForkHomeInstallFlow.settingsLanding
+            == "If Settings opens on TJ Element's page, tap back (top left) until you're on the main Settings list (your name at the top).")
     }
 }

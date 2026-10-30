@@ -3,13 +3,14 @@
 // Based on Element X iOS. SPDX-License-Identifier: AGPL-3.0-only
 //
 // Spec: WatchLab/Element/03_ARTIFACTS_SPEC.md rev 3, §3.2 (artifact state), §3.3 (request event), §3.4 (tickets),
-// §5.3 (layout mode), D15 (native gate), D16 (reload policy). Everything here is nonisolated and side-effect free, so the
-// Appendix A vectors run against it directly (Components/Variants/TJ/Tests).
+// §5.3 (layout mode), D15 (native gate), D16 (reload policy). Everything here is nonisolated and side-effect free (apart from an
+// MXLog warning when a lenient field drops a value), so the Appendix A vectors run against it directly (Components/Variants/TJ/Tests).
 //
 
 import CryptoKit
 import Foundation
 import SwiftUI
+import Synchronization
 
 // MARK: - A tiny JSON value (Sendable, decodes any Matrix event content)
 
@@ -561,31 +562,104 @@ nonisolated enum ForkArtifactSHA {
 /// Matrix forbids floats in event JSON (canonical JSON: Synapse answers M_BAD_JSON "float"). rev 3.1 writers send integer
 /// micro-USD; the retired dollar fields may still arrive as integers, numeric strings or numbers, so decode all three, and
 /// never fail the whole ticket over one.
+/// A string that doesn't parse, or isn't finite ("nan", "inf"), reads as nil and is reported (E6 stage fix S-B1).
 nonisolated struct ForkLenientDouble: Decodable, Equatable, Sendable {
     let value: Double?
 
     init(from decoder: Decoder) throws {
         let container = try decoder.singleValueContainer()
+        var parsed: Double?
         if let number = try? container.decode(Double.self) {
-            value = number
+            parsed = number
         } else if let text = try? container.decode(String.self) {
-            value = Double(text.trimmingCharacters(in: CharacterSet(charactersIn: "$ ")))
+            parsed = Double(text.trimmingCharacters(in: CharacterSet(charactersIn: "$ ")))
+        }
+        if let parsed, parsed.isFinite {
+            value = parsed
         } else {
             value = nil
+            decoder.reportDropped(nil, reason: parsed == nil ? "wrong type" : "not finite")
         }
     }
 }
 
-/// An integer that never fails its parent's decode: a wrong type reads as nil (E6 D2 `delivered_ts`).
+/// An integer that never fails its parent's decode: a wrong type reads as nil, and is reported (E6 D2 `delivered_ts`).
 nonisolated struct ForkLenientInt: Decodable, Equatable, Sendable {
     let value: Int?
 
     init(from decoder: Decoder) throws {
         value = try? decoder.singleValueContainer().decode(Int.self)
+        if value == nil { decoder.reportDropped(nil) }
+    }
+}
+
+/// E6 stage fix: a lenient field drops a value of the wrong type so the ticket still shows, but never silently. Every drop is
+/// an `MXLog` warning; a decoder can also carry one of these (`userInfo[ForkDecodeIssues.key]`) to collect the paths (tests).
+nonisolated final class ForkDecodeIssues: Sendable {
+    static let key = CodingUserInfoKey(rawValue: "tj.decodeIssues")!
+
+    private let storage = Mutex<[String]>([])
+
+    init() { }
+
+    /// Dotted coding paths, e.g. "cost.total_usd_micros", in the order they were dropped.
+    var paths: [String] {
+        storage.withLock { $0 }
+    }
+
+    func add(_ path: String) {
+        storage.withLock { $0.append(path) }
+    }
+
+    static func path(_ codingPath: [CodingKey]) -> String {
+        codingPath.map(\.stringValue).joined(separator: ".")
+    }
+
+    static func report(path: String, reason: String, issues: ForkDecodeIssues?) {
+        issues?.add(path)
+        MXLog.warning("TJ decode: dropped \(path.isEmpty ? "(root)" : path) (\(reason))")
+    }
+}
+
+extension Decoder {
+    /// Logs (and collects, when the decoder carries `ForkDecodeIssues`) a present value that was dropped.
+    nonisolated func reportDropped(_ key: CodingKey?, reason: String = "wrong type") {
+        ForkDecodeIssues.report(path: ForkDecodeIssues.path(codingPath + (key.map { [$0] } ?? [])), reason: reason,
+                                issues: userInfo[ForkDecodeIssues.key] as? ForkDecodeIssues)
+    }
+}
+
+/// Integer micro-USD from legacy dollars without trapping: nil for NaN, ±inf or anything outside `Int` (e.g. "1e20").
+nonisolated enum ForkMicros {
+    static func fromDollars(_ dollars: Double) -> Int? {
+        guard dollars.isFinite else { return nil }
+        return Int(exactly: (dollars * 1_000_000).rounded())
+    }
+
+    /// Adds without trapping: a value that would overflow the running sum is left out (and logged).
+    static func sum(_ values: [Int], label: String) -> Int? {
+        guard var total = values.first else { return nil }
+        for value in values.dropFirst() {
+            let (next, overflow) = total.addingReportingOverflow(value)
+            if overflow {
+                MXLog.warning("TJ devlog: left \(value) µ$ out of the \(label) total (it would overflow)")
+            } else {
+                total = next
+            }
+        }
+        return total
     }
 }
 
 extension KeyedDecodingContainer {
+    /// nil when absent or null; a present value of the wrong type is nil too, and reported (never silently dropped).
+    nonisolated func decodeReported<T: Decodable>(_ type: T.Type, forKey key: Key, in decoder: Decoder) -> T? {
+        guard contains(key), (try? decodeNil(forKey: key)) != true else { return nil }
+        if let value = try? decode(T.self, forKey: key) { return value }
+        decoder.reportDropped(key)
+        return nil
+    }
+
     nonisolated func decodeLenientDouble(forKey key: Key) -> Double? {
         (try? decodeIfPresent(ForkLenientDouble.self, forKey: key))?.value
     }
@@ -715,12 +789,20 @@ nonisolated struct ForkDevLogTicket: Decodable, Equatable, Sendable, Identifiabl
         }
 
         init(from decoder: Decoder) throws {
-            let c = try? decoder.container(keyedBy: CodingKeys.self)
-            number = try? c?.decodeIfPresent(String.self, forKey: .number)
-            forkSHA = try? c?.decodeIfPresent(String.self, forKey: .forkSHA)
-            xcode = try? c?.decodeIfPresent(String.self, forKey: .xcode)
-            testflight = try? c?.decodeIfPresent(String.self, forKey: .testflight)
-            code = try? c?.decodeIfPresent(String.self, forKey: .code)
+            guard let c = try? decoder.container(keyedBy: CodingKeys.self) else {
+                decoder.reportDropped(nil) // e.g. "build": "E6": the block is ignored, the ticket still shows
+                number = nil
+                forkSHA = nil
+                xcode = nil
+                testflight = nil
+                code = nil
+                return
+            }
+            number = c.decodeReported(String.self, forKey: .number, in: decoder)
+            forkSHA = c.decodeReported(String.self, forKey: .forkSHA, in: decoder)
+            xcode = c.decodeReported(String.self, forKey: .xcode, in: decoder)
+            testflight = c.decodeReported(String.self, forKey: .testflight, in: decoder)
+            code = c.decodeReported(String.self, forKey: .code, in: decoder)
         }
     }
 
@@ -817,11 +899,19 @@ nonisolated struct ForkDevLogTicket: Decodable, Equatable, Sendable, Identifiabl
         init(from decoder: Decoder) throws {
             let c = try decoder.container(keyedBy: CodingKeys.self)
             basis = try? c.decodeIfPresent(String.self, forKey: .basis)
-            totalUSD = c.decodeUSD(micros: .totalUSDMicros, legacy: .totalUSD)
-            apiRateUSD = c.decodeMicros(.apiRateUSDMicros)
-            totalMicros = (try? c.decodeIfPresent(Int.self, forKey: .totalUSDMicros)).flatMap { $0 }
-                ?? c.decodeLenientDouble(forKey: .totalUSD).map { Int(($0 * 1_000_000).rounded()) }
-            apiRateMicros = (try? c.decodeIfPresent(Int.self, forKey: .apiRateUSDMicros)).flatMap { $0 }
+            // E6 stage fix S-B1: hostile or odd numbers ("nan", "inf", "1e20", a string where an integer belongs) are dropped and
+            // logged; nothing here can trap. The receipt's dollars and the list's micros always agree (both nil, or the same value).
+            if let micros = c.decodeReported(Int.self, forKey: .totalUSDMicros, in: decoder) {
+                totalMicros = micros
+            } else if let dollars = c.decodeLenientDouble(forKey: .totalUSD) {
+                totalMicros = ForkMicros.fromDollars(dollars)
+                if totalMicros == nil { decoder.reportDropped(CodingKeys.totalUSD, reason: "out of range") }
+            } else {
+                totalMicros = nil
+            }
+            totalUSD = totalMicros.map { Double($0) / 1_000_000 }
+            apiRateMicros = c.decodeReported(Int.self, forKey: .apiRateUSDMicros, in: decoder)
+            apiRateUSD = apiRateMicros.map { Double($0) / 1_000_000 }
             note = try? c.decodeIfPresent(String.self, forKey: .note)
             provisionalUntil = try? c.decodeIfPresent(Int.self, forKey: .provisionalUntil)
             totalIsEstimate = try? c.decodeIfPresent(Bool.self, forKey: .totalIsEstimate)
@@ -858,7 +948,8 @@ nonisolated struct ForkDevLogTicket: Decodable, Equatable, Sendable, Identifiabl
     let build: Build?
     let cost: Cost?
     let links: Links?
-    /// E6 D2: optional ms when the ticket reached `delivered` (else `updated_ts` stands in).
+    /// E6 D2: optional ms when the ticket reached `delivered`. Without it there is no delivery time (`updated_ts` is only when the
+    /// ticket last changed).
     let deliveredTS: ForkLenientInt?
 
     enum CodingKeys: String, CodingKey {
@@ -870,10 +961,10 @@ nonisolated struct ForkDevLogTicket: Decodable, Equatable, Sendable, Identifiabl
         case deliveredTS = "delivered_ts"
     }
 
-    /// When a delivered ticket was delivered (ms); nil for any other stage.
+    /// When a delivered ticket was delivered (ms), from `delivered_ts` only; nil for any other stage or without it.
     var deliveredMS: Int? {
         guard stage == "delivered" else { return nil }
-        return deliveredTS?.value ?? updatedTS
+        return deliveredTS?.value
     }
 
     static let defaultStages = ["queued", "planning", "building", "validating", "shipping", "processing", "delivered"]
@@ -887,14 +978,27 @@ nonisolated struct ForkDevLogTicket: Decodable, Equatable, Sendable, Identifiabl
         stage != "delivered" && stage != "failed"
     }
 
-    /// Lenient decode of one state event's content: nil when not live (`v == 1`, `id`, `title`, `stage`).
-    static func parse(content: ForkJSON) -> ForkDevLogTicket? {
+    /// Lenient decode of one state event's content: nil when not live (`v == 1`, `id`, `title`, `stage`). A field that can't decode
+    /// at all still drops the ticket, but that is logged too (with `issues`, its path is collected).
+    static func parse(content: ForkJSON, issues: ForkDecodeIssues? = nil) -> ForkDevLogTicket? {
         guard content["v"]?.int == 1,
-              content["id"]?.string != nil, content["title"]?.string != nil, content["stage"]?.string != nil,
+              let id = content["id"]?.string, content["title"]?.string != nil, content["stage"]?.string != nil,
               let data = try? JSONEncoder().encode(content) else {
             return nil
         }
-        return try? JSONDecoder().decode(ForkDevLogTicket.self, from: data)
+        let decoder = JSONDecoder()
+        if let issues { decoder.userInfo[ForkDecodeIssues.key] = issues }
+        do {
+            return try decoder.decode(ForkDevLogTicket.self, from: data)
+        } catch {
+            let path: String = switch error as? DecodingError {
+            case .typeMismatch(_, let context)?, .valueNotFound(_, let context)?, .keyNotFound(_, let context)?, .dataCorrupted(let context)?:
+                ForkDecodeIssues.path(context.codingPath)
+            default: ""
+            }
+            ForkDecodeIssues.report(path: path, reason: "ticket \(id) not shown", issues: issues)
+            return nil
+        }
     }
 }
 

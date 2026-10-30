@@ -243,16 +243,84 @@ struct ForkRailBadgeColorTests {
 
     @Test
     func restIsTheBarTintAndOpenIsTheAccent() {
-        #expect(ForkRailBadgeColors.artifacts(open: false, dark: false).icon == ForkRailBadgeColors.resolved(.label, dark: false))
-        #expect(ForkRailBadgeColors.artifacts(open: false, dark: true).icon == ForkRailBadgeColors.resolved(.label, dark: true))
-        #expect(ForkRailBadgeColors.artifacts(open: true, dark: false).icon == ForkRailBadgeColors.resolved(.tintColor, dark: false))
+        // Literals: UIKit's label/background (black/white) and the app's accent asset (colors/accent-color, sRGB components).
+        #expect(Self.rgb(ForkRailBadgeColors.artifacts(open: false, dark: false).icon) == [0, 0, 0])
+        #expect(Self.rgb(ForkRailBadgeColors.artifacts(open: false, dark: true).icon) == [255, 255, 255])
+        #expect(Self.rgb(ForkRailBadgeColors.artifacts(open: true, dark: false).icon) == [27, 29, 34])     // 0.106 0.114 0.133
+        #expect(Self.rgb(ForkRailBadgeColors.artifacts(open: true, dark: true).icon) == [235, 238, 242])   // 0.922 0.933 0.949
         // The digits are cut out of the capsule in the bar's background colour (white on black at rest in light mode).
-        #expect(ForkRailBadgeColors.artifacts(open: false, dark: false).text == ForkRailBadgeColors.resolved(.systemBackground, dark: false))
+        #expect(Self.rgb(ForkRailBadgeColors.artifacts(open: false, dark: false).text) == [255, 255, 255])
+        #expect(Self.rgb(ForkRailBadgeColors.artifacts(open: false, dark: true).text) == [0, 0, 0])
     }
 
     @Test
-    func everyBarDrawsTheBadgeIntoTheIcon() {
-        // The system `.badge` is always red on iOS 26+ bars, so the Artifacts item never uses it (horizontal or vertical).
-        #expect(!ForkRailBadgeColors.artifactsUsesSystemBadge)
+    func everyBarDrawsTheBadgeIntoTheIcon() throws {
+        // The system `.badge` is always red on iOS 26+ bars, so the count is drawn into the icon image: a capsule in the icon's colour
+        // with digits in the background colour, and no red anywhere.
+        for dark in [false, true] {
+            for open in [false, true] {
+                let image = try #require(ForkRailBadgeColors.artifactsIcon(open: open, badge: "3", dark: dark))
+                let plain = try #require(ForkRailBadgeColors.artifactsIcon(open: true, badge: nil, dark: dark))
+                #expect(image.size.width > plain.size.width, "open \(open) dark \(dark)") // room for the capsule
+                let colours = Self.opaqueColours(image)
+                let look = ForkRailBadgeColors.artifacts(open: open, dark: dark)
+                #expect(colours.contains { Self.near($0, Self.rgb(look.icon)) }, "open \(open) dark \(dark)")
+                #expect(colours.contains { Self.near($0, Self.rgb(look.text)) }, "open \(open) dark \(dark)")
+                #expect(!colours.contains { $0[0] > 200 && $0[1] < 90 && $0[2] < 90 }, "red in open \(open) dark \(dark)")
+            }
+        }
+        // At rest with no count the bar's own template symbol is used (it follows the bar's tint).
+        #expect(ForkRailBadgeColors.artifactsIcon(open: false, badge: nil, dark: false) == nil)
+    }
+
+    @Test
+    func openColourIsTheSameWithAndWithoutABadge() throws {
+        // E6 review B1: the badged icon resolved UIColor.tintColor (systemBlue on a bare trait collection) while the plain icon took
+        // .tint(.accentColor) (the near-black/near-white asset), so "open" changed colour when the count appeared. One source now.
+        for dark in [false, true] {
+            let accent = dark ? [235, 238, 242] : [27, 29, 34]
+            let badged = Self.opaqueColours(try #require(ForkRailBadgeColors.artifactsIcon(open: true, badge: "3", dark: dark)))
+            let plain = Self.opaqueColours(try #require(ForkRailBadgeColors.artifactsIcon(open: true, badge: nil, dark: dark)))
+            #expect(!plain.isEmpty && plain.allSatisfy { Self.near($0, accent) }, "dark \(dark): \(plain)")
+            #expect(badged.contains { Self.near($0, accent) }, "dark \(dark)")
+            #expect(!badged.contains { $0[2] > $0[0] + 60 }, "blue in dark \(dark)") // never systemBlue
+            #expect(Self.rgb(ForkRailBadgeColors.artifacts(open: true, dark: dark).fill) == accent)
+            #expect(Self.rgb(ForkRailBadgeColors.openTint.resolvedColor(with: UITraitCollection(userInterfaceStyle: dark ? .dark : .light))) == accent)
+        }
+    }
+
+    // MARK: - Pixel helpers
+
+    /// Within one step per channel (8-bit rounding).
+    static func near(_ lhs: [Int], _ rhs: [Int]) -> Bool {
+        lhs.count == rhs.count && zip(lhs, rhs).allSatisfy { abs($0 - $1) <= 1 }
+    }
+
+    static func rgb(_ color: UIColor) -> [Int] {
+        var red: CGFloat = 0, green: CGFloat = 0, blue: CGFloat = 0, alpha: CGFloat = 0
+        color.getRed(&red, green: &green, blue: &blue, alpha: &alpha)
+        return [red, green, blue].map { Int(($0 * 255).rounded()) }
+    }
+
+    /// The colours of the fully opaque pixels, drawn into an 8-bit sRGB bitmap.
+    static func opaqueColours(_ image: UIImage) -> Set<[Int]> {
+        let width = Int(image.size.width * image.scale), height = Int(image.size.height * image.scale)
+        guard width > 0, height > 0, let space = CGColorSpace(name: CGColorSpace.sRGB),
+              let context = CGContext(data: nil, width: width, height: height, bitsPerComponent: 8, bytesPerRow: width * 4, space: space,
+                                      bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else {
+            return []
+        }
+        UIGraphicsPushContext(context)
+        context.translateBy(x: 0, y: CGFloat(height))
+        context.scaleBy(x: image.scale, y: -image.scale)
+        image.draw(in: CGRect(origin: .zero, size: image.size))
+        UIGraphicsPopContext()
+        guard let data = context.data else { return [] }
+        let bytes = data.bindMemory(to: UInt8.self, capacity: width * height * 4)
+        var colours = Set<[Int]>()
+        for index in stride(from: 0, to: width * height * 4, by: 4) where bytes[index + 3] == 255 {
+            colours.insert([Int(bytes[index]), Int(bytes[index + 1]), Int(bytes[index + 2])])
+        }
+        return colours
     }
 }

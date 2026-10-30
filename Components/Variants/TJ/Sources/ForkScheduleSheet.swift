@@ -232,7 +232,8 @@ struct ForkScheduleEditor: View {
 
     @State private var draft: ForkScheduleDraft
     /// E6 S1: false until the user picks a date, so a time picked alone lands on its next occurrence. An existing schedule whose
-    /// start is still ahead keeps its date; one that has passed rolls like a new one.
+    /// start is still ahead keeps its date; an existing Once that has passed rolls like a new one. An existing repeating schedule
+    /// never rolls (`setTime(isNew:)`, E6 stage fix P-B1).
     @State private var dateTouched: Bool
     @State private var saveRefusal: String?
     @State private var confirmDelete = false
@@ -279,9 +280,9 @@ struct ForkScheduleEditor: View {
             if !problems.isEmpty || saveRefusal != nil {
                 Section {
                     ForEach(problems, id: \.self) { problem in
-                        Text(ForkScheduleUI.words(problem)).foregroundStyle(problem == .inPast ? Color.red : .secondary)
+                        Text(ForkScheduleUI.words(problem)).foregroundStyle(problem.isTiming ? Color.red : .secondary)
                     }
-                    if let saveRefusal, !problems.contains(.inPast) {
+                    if let saveRefusal, !problems.contains(where: \.isTiming) {
                         Text(saveRefusal).foregroundStyle(.red)
                     }
                 }
@@ -380,7 +381,7 @@ struct ForkScheduleEditor: View {
             switch choice {
             case .once:
                 draft.repeatRule = .once
-                draft.setTime(minute: draft.minute, now: Date(), dateTouched: dateTouched)
+                draft.setTime(minute: draft.minute, now: Date(), dateTouched: dateTouched, isNew: entry == nil)
             case .daily: draft.repeatRule = .daily
             case .weekdays: draft.repeatRule = .weekdays
             case .weekly: draft.repeatRule = .weekly([draft.date.weekday])
@@ -432,7 +433,7 @@ struct ForkScheduleEditor: View {
             wallClockDate
         } set: { date in
             let local = Int(date.timeIntervalSince1970) + zone.secondsFromGMT(for: date)
-            draft.setTime(minute: ((local % 86400) + 86400) % 86400 / 60, now: Date(), dateTouched: dateTouched)
+            draft.setTime(minute: ((local % 86400) + 86400) % 86400 / 60, now: Date(), dateTouched: dateTouched, isNew: entry == nil)
         }
     }
 
@@ -614,6 +615,7 @@ enum ForkScheduleUI {
         case .noDays: "Pick at least one day."
         case .tooBig: "This schedule is too long to save."
         case .inPast: "That time has passed. Pick a later time or date."
+        case .tooSoon: "Pick a time at least a minute from now."
         case .rule(let error): ForkScheduleRoom.Status.message(for: error.rawValue)
         }
     }
