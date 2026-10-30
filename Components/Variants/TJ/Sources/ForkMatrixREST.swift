@@ -7,7 +7,9 @@
 //   never a setter, never the refresh token). They are never stored beyond the call, logged or handed to a web view.
 // - Requests go only to the session's own homeserver host (pinned on the first read); anything else is refused, redirects
 //   included (`ForkRedirectGuard`), so the Bearer header never follows a 3xx to another host.
-// - Writes: `sendMessage` (the §3.3 request in unencrypted rooms) and `join` (Dev Log invite). Nothing else.
+// - Writes: `sendMessage` (the §3.3 request in unencrypted rooms), `join` (Dev Log invite) and `putState`, which writes only the
+//   two schedule types (04_VOICE_SCHEDULE_SPEC.md rev 2 §B6; `ForkScheduleWrite` holds the allowlist and the 8 KiB cap).
+//   Nothing else.
 //
 
 import Foundation
@@ -110,6 +112,16 @@ actor ForkMatrixREST {
     /// `PUT /rooms/{roomID}/send/m.room.message/{txnID}`: idempotent for the same txn id. Returns the event id.
     func sendMessage(roomID: String, content: Data, txnID: String) async throws -> String {
         let path = "/_matrix/client/v3/rooms/\(Self.segment(roomID))/send/m.room.message/\(Self.segment(txnID))"
+        let data = try await perform("PUT", path: path, body: content)
+        guard let eventID = try? ForkJSON.decode(data)["event_id"]?.string else { throw RESTError.badResponse }
+        return eventID
+    }
+
+    /// `PUT /rooms/{roomID}/state/{type}/{stateKey}` for `ai.autopute.schedule` / `ai.autopute.schedule.kill` only (B6). Any other
+    /// type, or content over 8 KiB, is refused before a request is made. Returns the event id. Callers: ForkSchedule*.swift only.
+    func putState(roomID: String, type: String, stateKey: String, content: Data) async throws -> String {
+        try ForkScheduleWrite.check(type: type, content: content)
+        let path = "/_matrix/client/v3/rooms/\(Self.segment(roomID))/state/\(Self.segment(type))/\(Self.segment(stateKey))"
         let data = try await perform("PUT", path: path, body: content)
         guard let eventID = try? ForkJSON.decode(data)["event_id"]?.string else { throw RESTError.badResponse }
         return eventID

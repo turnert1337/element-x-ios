@@ -2,7 +2,8 @@
 // TJ fork: room chrome — rail items, Artifacts zone placement, TJ sheets (iOS Workshop, Element card).
 // Based on Element X iOS. SPDX-License-Identifier: AGPL-3.0-only
 //
-// Spec: WatchLab/Element/03_ARTIFACTS_SPEC.md rev 3, D1–D3, D9, §5.1–§5.3, §5.4a, §5.6, §5.7.
+// Spec: WatchLab/Element/03_ARTIFACTS_SPEC.md rev 3, D1–D3, D9, §5.1–§5.3, §5.4a, §5.6, §5.7; the Schedule rail item + sheet:
+// WatchLab/Element/04_VOICE_SCHEDULE_SPEC.md rev 2 §B6 (T3).
 // The ONE upstream hook (RoomFlowCoordinator.swift presentRoom, 2 lines) wraps each presented RoomScreenCoordinator in
 // `ForkRoomChrome.wrap(...)`. Under unit tests `wrap` returns the inner coordinator unchanged (D2), so upstream's
 // `rootCoordinator is RoomScreenCoordinator` assertions keep holding with no test edit.
@@ -40,6 +41,7 @@ final class ForkRoomChromeState {
 final class ForkRoomChromeCoordinator: CoordinatorProtocol {
     let inner: any CoordinatorProtocol
     let model: ForkArtifactsModel
+    let schedules: ForkScheduleModel
     let state = ForkRoomChromeState()
     private let roomProxy: JoinedRoomProxyProtocol?
     private weak var stack: NavigationStackCoordinator?
@@ -64,6 +66,9 @@ final class ForkRoomChromeCoordinator: CoordinatorProtocol {
         self.stack = stack
         self.flowParameters = flowParameters
         self.flow = flow
+        schedules = ForkScheduleModel(roomID: model.roomID, userID: model.userID, rest: model.rest) {
+            roomProxy?.infoPublisher.value.isEncrypted ?? false
+        }
         if let flowParameters, let stack {
             startChat = ForkStartChatPresenter(flowParameters: flowParameters, stack: stack, flow: flow)
         }
@@ -81,7 +86,10 @@ final class ForkRoomChromeCoordinator: CoordinatorProtocol {
 
     func start() {
         inner.start()
-        if roomProxy != nil { model.roomOpened() }
+        if roomProxy != nil {
+            model.roomOpened()
+            Task { [schedules] in await schedules.refresh() }
+        }
     }
 
     func stop() {
@@ -316,6 +324,24 @@ final class ForkRoomChromeCoordinator: CoordinatorProtocol {
         flowParameters?.userIndicatorController.submitIndicator(UserIndicator(title: "Sent. Watch the chat for the workshop bot's reply."))
     }
 
+    /// B6: the Schedule sheet. A room that isn't ready (encrypted, no workshop, not set up) shows why inside the sheet.
+    func presentSchedules() {
+        guard let stack else { return }
+        if model.isFullScreen { exitFullScreen() }
+        let name = roomProxy?.infoPublisher.value.displayName ?? "This chat"
+        let sheet = ForkScheduleSheet(model: schedules,
+                                      roomName: name,
+                                      onDone: { [weak self] in self?.stack?.setSheetCoordinator(nil) },
+                                      onOpenEvent: { [weak self] eventID in
+                                          guard let self else { return }
+                                          jumpToMessage(eventID: eventID, roomID: model.roomID)
+                                      })
+        stack.setSheetCoordinator(ForkHostingCoordinator(sheet)) { [weak self] in
+            guard let self else { return }
+            Task { [schedules] in await schedules.refresh() }
+        }
+    }
+
     func presentDevLog() {
         guard let stack else { return }
         let devlog = ForkDevLogModel(rest: model.rest)
@@ -388,7 +414,7 @@ struct ForkRoomChromeView: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { state.detailWidth = $0 }
-        .toolbar { ForkRoomToolbar(coordinator: coordinator, model: model, collapseDevLog: collapseDevLog, hasVerticalBar: state.hasVerticalBar, colorScheme: colorScheme).content }
+        .toolbar { ForkRoomToolbar(coordinator: coordinator, model: model, schedules: coordinator.schedules, collapseDevLog: collapseDevLog, hasVerticalBar: state.hasVerticalBar, colorScheme: colorScheme).content }
         .background {
             ForkWindowMetricsReader { size, scene in coordinator.windowChanged(size: size, scene: scene) }
                 .frame(width: 0, height: 0)
@@ -435,10 +461,11 @@ private struct ForkToolbarEdgeReader27: View {
 }
 #endif
 
-/// The room's rail items (D1): Artifacts, New chat, Dev log — merged by SwiftUI with upstream's items.
+/// The room's rail items (D1): Artifacts, Schedule (04 §B6), New chat, Dev log — merged by SwiftUI with upstream's items.
 struct ForkRoomToolbar {
     let coordinator: ForkRoomChromeCoordinator
     let model: ForkArtifactsModel
+    let schedules: ForkScheduleModel
     let collapseDevLog: Bool
     /// iOS 27.1 vertical bar (closed Duo): there the overlay badge draws and the system `.badge` does not (G-H6).
     let hasVerticalBar: Bool
@@ -457,6 +484,7 @@ struct ForkRoomToolbar {
         #if TJ_SDK27
         if #available(iOS 27.1, *) {
             ToolbarItem(placement: .primaryAction) { artifactsButton }.visibilityPriority(.high)
+            ToolbarItem(placement: .primaryAction) { scheduleButton }.visibilityPriority(.high)
             ToolbarItem(placement: .primaryAction) { newChatButton }.visibilityPriority(.high)
             ToolbarItem(placement: .primaryAction) { devLogItem }.visibilityPriority(.low)
         } else {
@@ -470,6 +498,7 @@ struct ForkRoomToolbar {
     @ToolbarContentBuilder
     private var plainItems: some ToolbarContent {
         ToolbarItem(placement: .primaryAction) { artifactsButton }
+        ToolbarItem(placement: .primaryAction) { scheduleButton }
         ToolbarItem(placement: .primaryAction) { newChatButton }
         ToolbarItem(placement: .primaryAction) { devLogItem }
     }
@@ -498,6 +527,31 @@ struct ForkRoomToolbar {
         .tint(open ? .accentColor : nil)
         .accessibilityValue(model.timerDoneBadge ? "Timer done" : (count > 0 ? "\(count) artifacts" : ""))
         .accessibilityIdentifier("tj_room-artifacts")
+    }
+
+    /// B6: badge = enabled trusted schedules; dimmed (the sheet says why) when the room isn't ready.
+    private var scheduleButton: some View {
+        let count = schedules.badgeCount
+        let badge = count > 0 ? "\(count)" : nil
+        let reason = schedules.room?.availability.message
+        let symbol = "calendar.badge.clock"
+        return Button {
+            coordinator.presentSchedules()
+        } label: {
+            Label {
+                Text("Schedule")
+            } icon: {
+                if usesSystemBadge || badge == nil {
+                    Image(systemName: symbol)
+                } else {
+                    Image(uiImage: ForkBadgedSymbol.image(symbol: symbol, badge: badge ?? "", color: symbolColor))
+                }
+            }
+            .opacity(reason == nil ? 1 : 0.45)
+        }
+        .modifier(ForkToolbarBadge(text: badge, enabled: usesSystemBadge))
+        .accessibilityValue(reason ?? (count > 0 ? "\(count) schedules" : ""))
+        .accessibilityIdentifier("tj_room-schedule")
     }
 
     private var newChatButton: some View {
