@@ -658,7 +658,7 @@ struct ForkRailBadge: View {
     }
 }
 
-/// E6 B1 (Test Round 1, a1): the Artifacts count badge matches its button — black (white in dark mode) at rest, the app's accent
+/// E6 B1 (Test Round 1, a1): the Artifacts count badge matches its button — black (white in dark mode) at rest, system blue
 /// while the zone is open — never attention red. The system `.badge` can't be recoloured on iOS 26+ bars (always red), so the
 /// Artifacts item never uses it.
 /// E6 stage fix: "open" used to be two colours: the badged icon resolved `UIColor.tintColor` against a bare trait collection
@@ -672,9 +672,10 @@ enum ForkRailBadgeColors {
         let text: UIColor
     }
 
-    /// The app's accent colour (the asset `.accentColor` resolves to: colors/accent-color).
+    /// Blue while the zone is open: the operator's rule (Test Round 1, a1: "when selected and in artifact, blue to match").
+    /// systemBlue, resolved per light/dark like every other rail colour.
     static var openTint: UIColor {
-        UIColor(named: "colors/accent-color") ?? .label
+        .systemBlue
     }
 
     static func artifacts(open: Bool, dark: Bool) -> Look {

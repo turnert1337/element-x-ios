@@ -242,12 +242,14 @@ struct ForkRailBadgeColorTests {
     }
 
     @Test
-    func restIsTheBarTintAndOpenIsTheAccent() {
-        // Literals: UIKit's label/background (black/white) and the app's accent asset (colors/accent-color, sRGB components).
+    func restIsTheBarTintAndOpenIsBlue() {
+        // Rest: UIKit's label (black/white). Open: blue (operator, Test Round 1 a1) — blue-dominant in both modes, never red.
         #expect(Self.rgb(ForkRailBadgeColors.artifacts(open: false, dark: false).icon) == [0, 0, 0])
         #expect(Self.rgb(ForkRailBadgeColors.artifacts(open: false, dark: true).icon) == [255, 255, 255])
-        #expect(Self.rgb(ForkRailBadgeColors.artifacts(open: true, dark: false).icon) == [27, 29, 34])     // 0.106 0.114 0.133
-        #expect(Self.rgb(ForkRailBadgeColors.artifacts(open: true, dark: true).icon) == [235, 238, 242])   // 0.922 0.933 0.949
+        for dark in [false, true] {
+            let open = Self.rgb(ForkRailBadgeColors.artifacts(open: true, dark: dark).icon)
+            #expect(open[2] >= 200 && open[2] > open[0] + 100 && open[2] > open[1], "open is blue, dark \(dark): \(open)")
+        }
         // The digits are cut out of the capsule in the bar's background colour (white on black at rest in light mode).
         #expect(Self.rgb(ForkRailBadgeColors.artifacts(open: false, dark: false).text) == [255, 255, 255])
         #expect(Self.rgb(ForkRailBadgeColors.artifacts(open: false, dark: true).text) == [0, 0, 0])
@@ -275,15 +277,15 @@ struct ForkRailBadgeColorTests {
 
     @Test
     func openColourIsTheSameWithAndWithoutABadge() throws {
-        // E6 review B1: the badged icon resolved UIColor.tintColor (systemBlue on a bare trait collection) while the plain icon took
-        // .tint(.accentColor) (the near-black/near-white asset), so "open" changed colour when the count appeared. One source now.
+        // E6 review B1: badged and plain open icons must be the same colour; operator rule: blue while open, never red.
         for dark in [false, true] {
-            let accent = dark ? [235, 238, 242] : [27, 29, 34]
+            let accent = Self.rgb(UIColor.systemBlue.resolvedColor(with: UITraitCollection(userInterfaceStyle: dark ? .dark : .light)))
+            #expect(accent[2] > accent[0] + 100, "open tint is blue, dark \(dark)") // operator: blue when open
             let badged = Self.opaqueColours(try #require(ForkRailBadgeColors.artifactsIcon(open: true, badge: "3", dark: dark)))
             let plain = Self.opaqueColours(try #require(ForkRailBadgeColors.artifactsIcon(open: true, badge: nil, dark: dark)))
             #expect(!plain.isEmpty && plain.allSatisfy { Self.near($0, accent) }, "dark \(dark): \(plain)")
             #expect(badged.contains { Self.near($0, accent) }, "dark \(dark)")
-            #expect(!badged.contains { $0[2] > $0[0] + 60 }, "blue in dark \(dark)") // never systemBlue
+            #expect(!badged.contains { $0[0] > $0[2] + 60 }, "red in dark \(dark)") // never attention red
             #expect(Self.rgb(ForkRailBadgeColors.artifacts(open: true, dark: dark).fill) == accent)
             #expect(Self.rgb(ForkRailBadgeColors.openTint.resolvedColor(with: UITraitCollection(userInterfaceStyle: dark ? .dark : .light))) == accent)
         }
