@@ -256,3 +256,57 @@ nonisolated enum ForkKnownArtifacts {
         defaults.set(data, forKey: key)
     }
 }
+
+// MARK: - Guided install (E6 H1)
+
+/// Test Round 1 (h2): the operator met Safari's "not secure" page, downloaded the profile and never found Install. One guided path:
+/// 1 make the icon, 2 Add (Safari's local-address warning explained), 3 one Open Settings step with the exact path, 4 a check.
+/// Apple's path (support.apple.com/102400, read 2026-10-30): Settings → Profile Downloaded → Install; deleted after 8 minutes.
+/// iOS has no public deep link to a downloaded profile: `openSettingsURLString` opens TJ Element's own Settings page (the
+/// undocumented `App-prefs:` scheme is not used; it can break on any release and is an App Review risk).
+struct ForkHomeInstallFlow: Equatable {
+    enum Step: Int, Comparable {
+        case icon = 1
+        case add
+        case settings
+        case check
+
+        static func < (lhs: Step, rhs: Step) -> Bool { lhs.rawValue < rhs.rawValue }
+    }
+
+    enum State: Equatable {
+        case done
+        case active
+        case upcoming
+    }
+
+    static let safariLine = "Safari opens and says “This connection is not secure”: that's this iPhone talking to itself (127.0.0.1); nothing goes online. Tap Continue, then Allow, then Close, then Done."
+    static let settingsLanding = "Settings opens on TJ Element's page. Tap back (top left) until you're on the main Settings list."
+    static let settingsPath = "Tap Profile Downloaded (just under your name), then Install (top right), enter your passcode and tap Install again."
+    static let fallbackPath = "Not there? General → VPN & Device Management → the TJ Element profile → Install."
+    static let timeLimit = "Install within 8 minutes or iOS deletes the download (then tap Add to Home Screen again). If Stolen Device Protection blocks it, install at home."
+
+    static var settingsURL: URL? {
+        URL(string: UIApplication.openSettingsURLString)
+    }
+
+    private(set) var step: Step = .add
+
+    func state(of item: Step) -> State {
+        if item == .icon { return step == .add ? .active : .done }
+        if item < step { return .done }
+        return item == step ? .active : .upcoming
+    }
+
+    mutating func profileServed() {
+        step = .settings
+    }
+
+    mutating func openedSettings() {
+        step = .check
+    }
+
+    mutating func startOver() {
+        step = .add
+    }
+}

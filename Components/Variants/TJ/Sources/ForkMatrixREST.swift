@@ -13,6 +13,8 @@
 //
 
 import Foundation
+import Network
+import Observation
 
 nonisolated struct ForkSessionCredentials: Sendable, Equatable {
     let accessToken: String
@@ -41,6 +43,10 @@ actor ForkMatrixREST {
     private var pinnedHost: String?
     private(set) var isExpired = false
 
+    /// E6 D1: fail at once when there's no network (the default for an ephemeral session, stated so nobody flips it): the Dev
+    /// log learns "offline" from `ForkNetworkPath`, not from a request that waits and then times out.
+    static let waitsForConnectivity = false
+
     static var userAgent: String {
         "TJElement/\(ForkBuildInfo.bundleVersion) (iOS; artifacts)"
     }
@@ -55,6 +61,7 @@ actor ForkMatrixREST {
         configuration.requestCachePolicy = .reloadIgnoringLocalCacheData
         configuration.httpCookieAcceptPolicy = .never
         configuration.httpShouldSetCookies = false
+        configuration.waitsForConnectivity = Self.waitsForConnectivity
         configuration.timeoutIntervalForRequest = 20
         configuration.timeoutIntervalForResource = 120
         session = URLSession(configuration: configuration, delegate: ForkRedirectGuard(), delegateQueue: nil)
@@ -232,5 +239,62 @@ nonisolated final class ForkRedirectGuard: NSObject, URLSessionTaskDelegate, Sen
     func urlSession(_ session: URLSession, task: URLSessionTask, willPerformHTTPRedirection response: HTTPURLResponse,
                     newRequest request: URLRequest, completionHandler: @escaping @Sendable (URLRequest?) -> Void) {
         completionHandler(Self.allows(from: task.originalRequest?.url, to: request.url) ? request : nil)
+    }
+}
+
+// MARK: - Network path (E6 D1)
+
+nonisolated enum ForkNetworkReach {
+    /// `.requiresConnection` (e.g. VPN on demand) isn't offline: a request may bring the link up.
+    static func isOffline(_ status: NWPath.Status) -> Bool {
+        status == .unsatisfied
+    }
+}
+
+/// The device's network path from `NWPathMonitor`: `isOffline` flips the moment iOS knows (Airplane Mode, no Wi-Fi or cellular),
+/// before any request could time out. Test Round 1 (c2) read "matrix.autopute.ai took too long to answer" in Airplane Mode.
+@Observable
+final class ForkNetworkPath {
+    static let shared = ForkNetworkPath(monitoring: true)
+
+    private(set) var isOffline = false
+    @ObservationIgnored private var monitor: NWPathMonitor?
+    @ObservationIgnored private var continuations: [UUID: AsyncStream<Bool>.Continuation] = [:]
+
+    /// `monitoring: false` is the test seam: nothing watches the real path; `update(offline:)` drives it.
+    init(monitoring: Bool) {
+        guard monitoring else { return }
+        let monitor = NWPathMonitor()
+        // The singleton lives for the app's lifetime, so the strong capture is fine; the handler runs on the monitor's queue.
+        monitor.pathUpdateHandler = Self.handler { offline in
+            Task { @MainActor in self.update(offline: offline) }
+        }
+        monitor.start(queue: DispatchQueue(label: "tj.network-path"))
+        self.monitor = monitor
+    }
+
+    func update(offline: Bool) {
+        guard offline != isOffline else { return }
+        isOffline = offline
+        MXLog.info("TJ network path: \(offline ? "offline" : "online")")
+        for continuation in continuations.values {
+            continuation.yield(offline)
+        }
+    }
+
+    /// Each change of `isOffline` from now on.
+    func changes() -> AsyncStream<Bool> {
+        let id = UUID()
+        let (stream, continuation) = AsyncStream<Bool>.makeStream(bufferingPolicy: .bufferingNewest(1))
+        continuations[id] = continuation
+        continuation.onTermination = { _ in
+            Task { @MainActor in self.continuations[id] = nil }
+        }
+        return stream
+    }
+
+    /// Built outside the main actor: NWPathMonitor calls it on its own queue.
+    private nonisolated static func handler(_ sink: @escaping @Sendable (Bool) -> Void) -> @Sendable (NWPath) -> Void {
+        { path in sink(ForkNetworkReach.isOffline(path.status)) }
     }
 }

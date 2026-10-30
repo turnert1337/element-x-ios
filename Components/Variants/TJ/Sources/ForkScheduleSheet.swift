@@ -144,16 +144,11 @@ struct ForkScheduleSheet: View {
         }
     }
 
-    /// B6 defaults: device time zone, Once, 9:00 AM today (tomorrow once 9:00 has passed).
+    /// B6 defaults: device time zone, Once, 9:00 AM today (tomorrow once 9:00 has passed). Changing only the time moves the date
+    /// with it (E6 S1, `ForkScheduleDraft.setTime`).
     private static func newDraft() -> ForkScheduleDraft {
         let tz = (try? ForkScheduleTime.zone(TimeZone.current.identifier)) != nil ? TimeZone.current.identifier : ForkScheduleConstants.defaultTZ
-        let zone = (try? ForkScheduleTime.zone(tz)) ?? .gmt
-        let now = Date()
-        let today = ForkScheduleTime.localDate(of: now, in: zone)
-        let localMinute = (Int(now.timeIntervalSince1970) + zone.secondsFromGMT(for: now)) % 86400 / 60
-        var draft = ForkScheduleDraft.new(sid: "", tz: tz, today: localMinute < 9 * 60 ? today : today.adding(days: 1), threadRoot: nil)
-        draft.minute = 9 * 60
-        return draft
+        return ForkScheduleDraft.new(tz: tz, now: Date(), threadRoot: nil)
     }
 }
 
@@ -174,9 +169,13 @@ struct ForkScheduleRow: View {
                     .font(.body.weight(.semibold))
                     .foregroundStyle(entry.isEnabled ? .primary : .secondary)
                 if let draft = entry.draft {
-                    Text("\(ForkScheduleText.repeatWords(draft.repeatRule)) · \(ForkScheduleUI.clock(draft.minute))")
+                    Text(ForkScheduleUI.summary(draft))
                         .font(.subheadline)
                         .foregroundStyle(.secondary)
+                }
+                if let fireLine {
+                    ForkScheduleUI.line(fireLine, color: .secondary)
+                        .accessibilityIdentifier("tj_schedule-fires")
                 }
                 stateLine
             }
@@ -190,6 +189,17 @@ struct ForkScheduleRow: View {
             }
         }
         .padding(.vertical, 2)
+    }
+
+    /// E6 S1: "Fires in 3 min" / "Fires tomorrow at 11:17 AM", from the relay's next fire, else from the schedule itself (so a
+    /// wrong date shows even while the workshop hasn't confirmed yet).
+    private var fireLine: String? {
+        guard let draft = entry.draft, entry.isEnabled, !paused, entry.status?.error == nil,
+              let zone = try? ForkScheduleTime.zone(draft.tz) else {
+            return nil
+        }
+        guard let next = entry.status?.nextFire ?? draft.preview(now: now, count: 1).first else { return nil }
+        return ForkScheduleText.countdown(to: next, now: now, zone: zone)
     }
 
     @ViewBuilder
@@ -206,9 +216,7 @@ struct ForkScheduleRow: View {
             ForkScheduleUI.line("Off", color: .secondary)
         } else if paused {
             ForkScheduleUI.line("Paused", color: .secondary)
-        } else if let next = entry.status?.nextFire {
-            ForkScheduleUI.line("Next \(ForkScheduleText.relative(next, now: now))", color: .secondary)
-        } else {
+        } else if fireLine == nil {
             ForkScheduleUI.line("Nothing left to fire", color: .secondary)
         }
     }
@@ -223,6 +231,10 @@ struct ForkScheduleEditor: View {
     let onClose: () -> Void
 
     @State private var draft: ForkScheduleDraft
+    /// E6 S1: false until the user picks a date, so a time picked alone lands on its next occurrence. An existing schedule whose
+    /// start is still ahead keeps its date; one that has passed rolls like a new one.
+    @State private var dateTouched: Bool
+    @State private var saveRefusal: String?
     @State private var confirmDelete = false
     /// Made once, so a retried save can't create a second schedule.
     @State private var newSID: String?
@@ -233,6 +245,7 @@ struct ForkScheduleEditor: View {
         self.onOpenEvent = onOpenEvent
         self.onClose = onClose
         _draft = State(initialValue: draft)
+        _dateTouched = State(initialValue: entry != nil && (draft.startInstant ?? .distantPast) > Date())
     }
 
     private var zone: TimeZone {
@@ -240,7 +253,7 @@ struct ForkScheduleEditor: View {
     }
 
     private var problems: [ForkScheduleDraft.Problem] {
-        draft.problems()
+        draft.problems() + [draft.timingProblem(now: Date())].compactMap { $0 }
     }
 
     var body: some View {
@@ -263,12 +276,16 @@ struct ForkScheduleEditor: View {
             whenSection
             previewSection
             if let entry { statusSections(entry) }
-            if !problems.isEmpty {
+            if !problems.isEmpty || saveRefusal != nil {
                 Section {
                     ForEach(problems, id: \.self) { problem in
-                        Text(ForkScheduleUI.words(problem)).foregroundStyle(.secondary)
+                        Text(ForkScheduleUI.words(problem)).foregroundStyle(problem == .inPast ? Color.red : .secondary)
+                    }
+                    if let saveRefusal, !problems.contains(.inPast) {
+                        Text(saveRefusal).foregroundStyle(.red)
                     }
                 }
+                .accessibilityIdentifier("tj_schedule-problems")
             }
             // Also at the end: on the closed Duo, scrolling hides the navigation bar and its Save (T3 G-S-A2 run).
             Section {
@@ -304,6 +321,12 @@ struct ForkScheduleEditor: View {
     }
 
     private func save() {
+        // The clock moved since the last render: check the Once time again right now.
+        if let late = draft.timingProblem(now: Date()) {
+            saveRefusal = ForkScheduleUI.words(late)
+            return
+        }
+        saveRefusal = nil
         if entry == nil {
             let sid = newSID ?? ForkScheduleDraft.makeSID(title: draft.title)
             newSID = sid
@@ -329,12 +352,14 @@ struct ForkScheduleEditor: View {
                 LabeledContent("Rule", value: rule)
                     .font(.footnote.monospaced())
             }
-            DatePicker(draft.repeatRule == .once ? "Date" : "Starts", selection: wallClock, displayedComponents: .date)
-            DatePicker("Time", selection: wallClock, displayedComponents: .hourAndMinute)
+            DatePicker(draft.repeatRule == .once ? "Date" : "Starts", selection: datePart, displayedComponents: .date)
+                .accessibilityIdentifier("tj_schedule-date")
+            DatePicker("Time", selection: timePart, displayedComponents: .hourAndMinute)
                 .accessibilityIdentifier("tj_schedule-time")
             if draft.tz != ForkScheduleConstants.defaultTZ {
                 LabeledContent("Time zone", value: draft.tz)
             }
+            fireSummary
         } header: {
             Text("When")
         } footer: {
@@ -353,7 +378,9 @@ struct ForkScheduleEditor: View {
             ForkScheduleUI.RepeatChoice(draft.repeatRule)
         } set: { choice in
             switch choice {
-            case .once: draft.repeatRule = .once
+            case .once:
+                draft.repeatRule = .once
+                draft.setTime(minute: draft.minute, now: Date(), dateTouched: dateTouched)
             case .daily: draft.repeatRule = .daily
             case .weekdays: draft.repeatRule = .weekdays
             case .weekly: draft.repeatRule = .weekly([draft.date.weekday])
@@ -362,15 +389,50 @@ struct ForkScheduleEditor: View {
         }
     }
 
+    /// The full date the schedule fires (or starts) and how far away that is, so a wrong day can't hide (E6 S1).
+    private var fireSummary: some View {
+        SwiftUI.TimelineView(.periodic(from: .now, by: 15)) { context in
+            let next = draft.repeatRule == .once ? draft.startInstant : draft.preview(now: context.date, count: 1).first
+            VStack(alignment: .leading, spacing: 3) {
+                if let next {
+                    Text(next.formatted(Date.FormatStyle(date: .complete, time: .shortened, timeZone: zone)))
+                        .font(.callout.weight(.semibold))
+                    let countdown = ForkScheduleText.countdown(to: next, now: context.date, zone: zone)
+                    Text(countdown)
+                        .font(.footnote)
+                        .foregroundStyle(next.timeIntervalSince(context.date) < ForkScheduleOnce.minimumLead ? Color.red : .secondary)
+                } else {
+                    Text("Nothing will fire").font(.footnote).foregroundStyle(.secondary)
+                }
+            }
+            .accessibilityElement(children: .combine)
+            .accessibilityIdentifier("tj_schedule-fire-summary")
+        }
+    }
+
     /// The draft's local date + time as a Date in the schedule's zone (the pickers run in that zone).
-    private var wallClock: Binding<Date> {
+    private var wallClockDate: Date {
+        ForkScheduleOnce.instant(date: draft.date, minute: draft.minute, zone: zone)
+    }
+
+    /// The date picker: the user chose a day, so it sticks.
+    private var datePart: Binding<Date> {
         Binding {
-            let seconds = draft.date.dayNumber * 86400 + draft.minute * 60
-            return ForkScheduleTime.utc(localSeconds: seconds, in: zone).date
+            wallClockDate
         } set: { date in
             draft.date = ForkScheduleTime.localDate(of: date, in: zone)
+            dateTouched = true
+        }
+    }
+
+    /// The time picker: only the minute comes from it; the date follows unless the user picked one (E6 S1 root cause: this
+    /// picker used to keep the default's rolled-over date).
+    private var timePart: Binding<Date> {
+        Binding {
+            wallClockDate
+        } set: { date in
             let local = Int(date.timeIntervalSince1970) + zone.secondsFromGMT(for: date)
-            draft.minute = ((local % 86400) + 86400) % 86400 / 60
+            draft.setTime(minute: ((local % 86400) + 86400) % 86400 / 60, now: Date(), dateTouched: dateTouched)
         }
     }
 
@@ -518,6 +580,15 @@ enum ForkScheduleUI {
         }
     }
 
+    /// The row's second line: "Once · Sat, Oct 31, 11:17 AM" (the date matters for a Once) or "Every day · 9:00 AM".
+    static func summary(_ draft: ForkScheduleDraft) -> String {
+        let words = ForkScheduleText.repeatWords(draft.repeatRule)
+        guard draft.repeatRule == .once, let start = draft.startInstant, let zone = try? ForkScheduleTime.zone(draft.tz) else {
+            return "\(words) · \(clock(draft.minute))"
+        }
+        return "\(words) · \(start.formatted(Date.FormatStyle(timeZone: zone).weekday(.abbreviated).month(.abbreviated).day())), \(clock(draft.minute))"
+    }
+
     static func clock(_ minute: Int) -> String {
         Date(timeIntervalSince1970: TimeInterval(minute * 60)).formatted(Date.FormatStyle(date: .omitted, time: .shortened, timeZone: .gmt))
     }
@@ -542,6 +613,7 @@ enum ForkScheduleUI {
         case .messageTooLong: "Keep the message to \(ForkScheduleConstants.maxBrief) characters."
         case .noDays: "Pick at least one day."
         case .tooBig: "This schedule is too long to save."
+        case .inPast: "That time has passed. Pick a later time or date."
         case .rule(let error): ForkScheduleRoom.Status.message(for: error.rawValue)
         }
     }

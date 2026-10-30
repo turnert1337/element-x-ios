@@ -65,7 +65,7 @@ final class ForkScheduleModel {
         } catch is CancellationError {
         } catch let error as URLError where error.code == .cancelled {
         } catch {
-            if room == nil { loadState = .failed(Self.words(for: error)) }
+            if room == nil { loadState = .failed(Self.words(for: error, offline: ForkNetworkPath.shared.isOffline)) }
         }
     }
 
@@ -114,7 +114,7 @@ final class ForkScheduleModel {
             await refresh()
             return true
         } catch {
-            writeError = Self.words(for: error)
+            writeError = Self.words(for: error, offline: ForkNetworkPath.shared.isOffline)
             return false
         }
     }
@@ -125,8 +125,10 @@ final class ForkScheduleModel {
         Int((Date().timeIntervalSince1970 * 1000).rounded())
     }
 
-    static func words(for error: Error) -> String {
-        switch error {
+    /// `offline`: the network path is down (E6 D1), which beats whatever the request error says.
+    static func words(for error: Error, offline: Bool = false) -> String {
+        if offline, error is URLError { return "This iPhone is offline." }
+        return switch error {
         case ForkMatrixREST.RESTError.forbidden:
             "This chat isn't set up for schedules yet. Ask the workshop to set it up."
         case ForkMatrixREST.RESTError.sessionExpired, ForkMatrixREST.RESTError.noSession:
@@ -135,7 +137,7 @@ final class ForkScheduleModel {
             "This schedule is too long to save. Shorten the message."
         case ForkScheduleWrite.Refusal.typeNotAllowed:
             "TJ Element refused that write."
-        case let error as URLError where error.code == .notConnectedToInternet:
+        case let error as URLError where [.notConnectedToInternet, .dataNotAllowed].contains(error.code):
             "This iPhone is offline."
         case ForkMatrixREST.RESTError.http(let code):
             "The server said \(code). Try again."

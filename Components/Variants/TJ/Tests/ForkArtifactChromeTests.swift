@@ -226,3 +226,33 @@ final class ForkFakeSchemeTask: NSObject, WKURLSchemeTask {
     func didFinish() { finished = true }
     func didFailWithError(_ error: any Error) { finished = true }
 }
+
+/// E6 B1 (Test Round 1, step a1): the Artifacts count badge takes the button's own colour, never red.
+struct ForkRailBadgeColorTests {
+    @Test
+    func badgeMatchesTheButtonInEveryState() {
+        for dark in [false, true] {
+            for open in [false, true] {
+                let look = ForkRailBadgeColors.artifacts(open: open, dark: dark)
+                #expect(look.fill == look.icon, "open \(open) dark \(dark)")
+                #expect(look.fill != ForkRailBadgeColors.resolved(.systemRed, dark: dark), "open \(open) dark \(dark)")
+                #expect(look.text != look.fill)
+            }
+        }
+    }
+
+    @Test
+    func restIsTheBarTintAndOpenIsTheAccent() {
+        #expect(ForkRailBadgeColors.artifacts(open: false, dark: false).icon == ForkRailBadgeColors.resolved(.label, dark: false))
+        #expect(ForkRailBadgeColors.artifacts(open: false, dark: true).icon == ForkRailBadgeColors.resolved(.label, dark: true))
+        #expect(ForkRailBadgeColors.artifacts(open: true, dark: false).icon == ForkRailBadgeColors.resolved(.tintColor, dark: false))
+        // The digits are cut out of the capsule in the bar's background colour (white on black at rest in light mode).
+        #expect(ForkRailBadgeColors.artifacts(open: false, dark: false).text == ForkRailBadgeColors.resolved(.systemBackground, dark: false))
+    }
+
+    @Test
+    func everyBarDrawsTheBadgeIntoTheIcon() {
+        // The system `.badge` is always red on iOS 26+ bars, so the Artifacts item never uses it (horizontal or vertical).
+        #expect(!ForkRailBadgeColors.artifactsUsesSystemBadge)
+    }
+}

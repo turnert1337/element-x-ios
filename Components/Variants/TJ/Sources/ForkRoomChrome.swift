@@ -545,17 +545,19 @@ struct ForkRoomToolbar {
             Label {
                 Text(open ? "Close artifacts" : "Artifacts")
             } icon: {
-                if usesSystemBadge || badge == nil {
-                    Image(systemName: open ? "square.stack.3d.up.fill" : "square.stack.3d.up")
-                } else {
-                    // Vertical bar (and before iOS 26): the count is drawn into the icon image itself; the bar draws neither
-                    // an overlay nor `.badge` there (G-H6 run 1, closed Duo 27.1).
+                if let badge {
+                    // E6 B1: on every bar the count is drawn into the icon in the button's own colour (the bar's tint at rest, the
+                    // accent while the zone is open). The system `.badge` is always red on iOS 26+ bars; the 27.1 vertical bar draws
+                    // neither it nor an overlay (G-H6), and original-rendering images show on both bars (build 5 F2).
+                    let look = ForkRailBadgeColors.artifacts(open: open, dark: colorScheme == .dark)
                     Image(uiImage: ForkBadgedSymbol.image(symbol: open ? "square.stack.3d.up.fill" : "square.stack.3d.up",
-                                                          badge: badge ?? "", color: open ? .tintColor : symbolColor))
+                                                          badge: badge, color: look.icon, badgeFill: look.fill, badgeText: look.text))
+                } else {
+                    Image(systemName: open ? "square.stack.3d.up.fill" : "square.stack.3d.up")
                 }
             }
         }
-        .modifier(ForkToolbarBadge(text: badge, enabled: usesSystemBadge))
+        .modifier(ForkToolbarBadge(text: badge, enabled: ForkRailBadgeColors.artifactsUsesSystemBadge))
         .tint(open ? .accentColor : nil)
         .accessibilityValue(model.timerDoneBadge ? "Timer done" : (count > 0 ? "\(count) artifacts" : ""))
         .accessibilityIdentifier("tj_room-artifacts")
@@ -658,7 +660,30 @@ struct ForkRailBadge: View {
     }
 }
 
-/// An SF Symbol with a red count capsule drawn into the same image (original rendering), for bars that drop overlays.
+/// E6 B1 (Test Round 1, a1): the Artifacts count badge matches its button — black (white in dark mode) at rest, the accent blue
+/// while the zone is open — never attention red.
+enum ForkRailBadgeColors {
+    struct Look: Equatable {
+        let icon: UIColor
+        let fill: UIColor
+        /// The digits, in the bar's background colour so they read as cut out of the capsule.
+        let text: UIColor
+    }
+
+    /// The system `.badge` can't be recoloured on iOS 26+ bars (always red), so the Artifacts item never uses it.
+    static let artifactsUsesSystemBadge = false
+
+    static func artifacts(open: Bool, dark: Bool) -> Look {
+        let icon = resolved(open ? .tintColor : .label, dark: dark)
+        return Look(icon: icon, fill: icon, text: open ? .white : resolved(.systemBackground, dark: dark))
+    }
+
+    static func resolved(_ color: UIColor, dark: Bool) -> UIColor {
+        color.resolvedColor(with: UITraitCollection(userInterfaceStyle: dark ? .dark : .light))
+    }
+}
+
+/// An SF Symbol with a count capsule (red unless told otherwise) drawn into the same image (original rendering), for bars that drop overlays.
 enum ForkBadgedSymbol {
     /// The symbol alone in one fixed colour (original rendering), e.g. the Schedule item's dimmed not-ready look.
     static func plain(symbol: String, color: UIColor) -> UIImage {
@@ -666,11 +691,11 @@ enum ForkBadgedSymbol {
         return UIImage(systemName: symbol, withConfiguration: configuration)?.withTintColor(color, renderingMode: .alwaysOriginal) ?? UIImage()
     }
 
-    static func image(symbol: String, badge: String, color: UIColor) -> UIImage {
+    static func image(symbol: String, badge: String, color: UIColor, badgeFill: UIColor = .systemRed, badgeText: UIColor = .white) -> UIImage {
         let base = plain(symbol: symbol, color: color)
         guard base.size != .zero else { return UIImage() }
         let font = UIFont.systemFont(ofSize: 10, weight: .bold)
-        let text = NSAttributedString(string: badge, attributes: [.font: font, .foregroundColor: UIColor.white])
+        let text = NSAttributedString(string: badge, attributes: [.font: font, .foregroundColor: badgeText])
         let textSize = text.size()
         let badgeSize = CGSize(width: max(15, textSize.width + 8), height: 15)
         let inset = CGPoint(x: badgeSize.width * 0.55, y: 7)
@@ -678,7 +703,7 @@ enum ForkBadgedSymbol {
         let image = UIGraphicsImageRenderer(size: size).image { _ in
             base.draw(at: CGPoint(x: 0, y: inset.y))
             let rect = CGRect(x: size.width - badgeSize.width, y: 0, width: badgeSize.width, height: badgeSize.height)
-            UIColor.systemRed.setFill()
+            badgeFill.setFill()
             UIBezierPath(roundedRect: rect, cornerRadius: badgeSize.height / 2).fill()
             text.draw(at: CGPoint(x: rect.midX - textSize.width / 2, y: rect.midY - textSize.height / 2))
         }

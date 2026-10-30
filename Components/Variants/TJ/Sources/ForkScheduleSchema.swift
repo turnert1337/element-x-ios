@@ -399,6 +399,8 @@ nonisolated struct ForkScheduleDraft: Equatable, Sendable {
         case messageTooLong
         case noDays
         case tooBig
+        /// E6 S1: a Once at (or within `ForkScheduleOnce.minimumLead` of) the current time.
+        case inPast
         case rule(ForkScheduleError)
     }
 
@@ -544,6 +546,54 @@ nonisolated struct ForkScheduleDraft: Equatable, Sendable {
         } else if object[key] != nil {
             object[key] = .null
         }
+    }
+}
+
+// MARK: - Once timing (E6 S1)
+
+/// Test Round 1 (e2): a Once made at 11:16 for 11:17 was stored for tomorrow. The new-schedule default is 9:00 AM tomorrow once 9:00
+/// has passed, and the time-only picker kept that date. Now a time picked without touching the date means its next occurrence.
+nonisolated enum ForkScheduleOnce {
+    /// A Once must be at least this far ahead at save, so the relay sees it before it's due (B3: an occurrence planned before the
+    /// relay first sees the schedule never fires).
+    static let minimumLead: TimeInterval = 30
+
+    /// The instant a local date + minute names in the zone (the relay's fold=0 rule, `ForkScheduleTime.utc`).
+    static func instant(date: ForkCivilDate, minute: Int, zone: TimeZone) -> Date {
+        ForkScheduleTime.utc(localSeconds: date.dayNumber * 86400 + minute * 60, in: zone).date
+    }
+
+    /// The alarm-clock rule: today if that time is still ahead, else tomorrow.
+    static func nextDate(minute: Int, now: Date, zone: TimeZone) -> ForkCivilDate {
+        let today = ForkScheduleTime.localDate(of: now, in: zone)
+        return instant(date: today, minute: minute, zone: zone) > now ? today : today.adding(days: 1)
+    }
+}
+
+nonisolated extension ForkScheduleDraft {
+    /// B6 defaults: Once at 9:00 AM, today or (once 9:00 has passed) tomorrow.
+    static func new(tz: String, now: Date, threadRoot: String?) -> ForkScheduleDraft {
+        let zone = (try? ForkScheduleTime.zone(tz)) ?? .gmt
+        return new(sid: "", tz: tz, today: ForkScheduleOnce.nextDate(minute: 9 * 60, now: now, zone: zone), threadRoot: threadRoot)
+    }
+
+    /// The time picker: with the date untouched the date follows the time to its next occurrence.
+    mutating func setTime(minute: Int, now: Date, dateTouched: Bool) {
+        self.minute = minute
+        guard !dateTouched, let zone = try? ForkScheduleTime.zone(tz) else { return }
+        date = ForkScheduleOnce.nextDate(minute: minute, now: now, zone: zone)
+    }
+
+    /// The instant the draft's date + time names (the Once fire time; a repeating rule's start).
+    var startInstant: Date? {
+        (try? ForkScheduleTime.zone(tz)).map { ForkScheduleOnce.instant(date: date, minute: minute, zone: $0) }
+    }
+
+    /// `.inPast` for a Once that has passed or is seconds away. Separate from `problems()` because it depends on the clock and
+    /// must not block Turn off / Delete on an old schedule.
+    func timingProblem(now: Date) -> Problem? {
+        guard repeatRule == .once, let start = startInstant else { return nil }
+        return start.timeIntervalSince(now) < ForkScheduleOnce.minimumLead ? .inPast : nil
     }
 }
 
@@ -770,6 +820,8 @@ nonisolated extension ForkScheduleDraft {
 nonisolated enum ForkScheduleText {
     static let dayNames = ["Mondays", "Tuesdays", "Wednesdays", "Thursdays", "Fridays", "Saturdays", "Sundays"]
     static let shortDayNames = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
+    static let weekdayNames = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
+    static let shortMonthNames = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
 
     static func repeatWords(_ rule: ForkScheduleDraft.Repeat) -> String {
         switch rule {
@@ -793,6 +845,32 @@ nonisolated enum ForkScheduleText {
         if magnitude < 60 { return "now" }
         let words = magnitude < 3600 ? "\(Int(magnitude / 60)) min" : (magnitude < 86400 ? "\(Int(magnitude / 3600)) h" : "\(Int(magnitude / 86400)) d")
         return seconds > 0 ? "in \(words)" : "\(words) ago"
+    }
+
+    /// E6 S1: "Fires in 3 min" / "Fires today at 3:05 PM" / "Fires tomorrow at 11:17 AM" / "Fires Tuesday at 9:00 AM" /
+    /// "Fires Fri, Nov 20 at 9:00 AM", in the schedule's zone. Fixed English, like the rest of the schedule words.
+    static func countdown(to fire: Date, now: Date, zone: TimeZone) -> String {
+        let seconds = fire.timeIntervalSince(now)
+        guard seconds > 0 else { return "That time has passed" }
+        if seconds < 60 { return "Fires in under a minute" }
+        if seconds < 3600 { return "Fires in \(Int((seconds / 60).rounded(.up))) min" }
+        let day = ForkScheduleTime.localDate(of: fire, in: zone)
+        let today = ForkScheduleTime.localDate(of: now, in: zone)
+        let local = Int(fire.timeIntervalSince1970.rounded(.down)) + zone.secondsFromGMT(for: fire)
+        let clock = clock12(((local % 86400) + 86400) % 86400 / 60)
+        switch day.dayNumber - today.dayNumber {
+        case 0: return "Fires today at \(clock)"
+        case 1: return "Fires tomorrow at \(clock)"
+        case 2...6: return "Fires \(weekdayNames[day.weekday]) at \(clock)"
+        default:
+            let date = "\(shortDayNames[day.weekday]), \(shortMonthNames[day.month - 1]) \(day.day)"
+            return "Fires \(day.year == today.year ? date : "\(date), \(day.year)") at \(clock)"
+        }
+    }
+
+    static func clock12(_ minute: Int) -> String {
+        let hour = minute / 60
+        return "\(hour % 12 == 0 ? 12 : hour % 12):\(String(format: "%02d", minute % 60)) \(hour < 12 ? "AM" : "PM")"
     }
 
     /// B2.2 run outcomes in plain words.

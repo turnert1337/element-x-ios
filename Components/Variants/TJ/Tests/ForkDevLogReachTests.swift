@@ -247,6 +247,163 @@ struct ForkDevLogReachTests {
     }
 }
 
+/// E6 D1 (Test Round 1, step c2): in Airplane Mode the Dev log said "matrix.autopute.ai took too long to answer". The network path
+/// (NWPathMonitor) decides "offline" now, before and regardless of what a request error says.
+struct ForkDevLogOfflineTests {
+    @Test
+    func pathStatusMapsToOffline() {
+        #expect(ForkNetworkReach.isOffline(.unsatisfied))
+        #expect(!ForkNetworkReach.isOffline(.satisfied))
+        #expect(!ForkNetworkReach.isOffline(.requiresConnection)) // e.g. VPN on demand: let the request try
+    }
+
+    @Test
+    func anyTransportErrorWhileThePathIsDownIsOffline() {
+        #expect(ForkDevLogProblem.from(URLError(.timedOut), pathOffline: true) == .offline)
+        #expect(ForkDevLogProblem.from(URLError(.cannotFindHost), pathOffline: true) == .offline)
+        #expect(ForkDevLogProblem.from(URLError(.timedOut), pathOffline: false) == .timedOut)
+        #expect(ForkDevLogProblem.from(ForkMatrixREST.RESTError.noSession, pathOffline: true) == .notSignedIn)
+        #expect(ForkDevLogProblem.from(URLError(.cancelled), pathOffline: true) == nil)
+    }
+
+    @Test
+    func offlinePathFailsAtOnceWithoutARequest() async {
+        ForkScriptedServer.reset([.respond(200, "{\"room_id\":\"!dev\"}"), .respond(200, ForkDevLogReachTests.stateJSON)])
+        let network = ForkNetworkPath(monitoring: false)
+        network.update(offline: true)
+        let model = ForkDevLogModel(rest: ForkDevLogReachTests.rest(), cacheBase: ForkDevLogReachTests.tempBase(), network: network)
+        let started = Date()
+        let delay = await model.refresh()
+        #expect(Date().timeIntervalSince(started) < 1)
+        #expect(ForkScriptedServer.requestCount() == 0)
+        #expect(delay == nil) // no backoff polling: the path change brings it back
+        #expect(model.problem == "This iPhone is offline.")
+        #expect(model.isWaitingForNetwork)
+    }
+
+    @Test
+    func comingBackOnlineRecoversByItself() async {
+        ForkScriptedServer.reset([.respond(200, "{\"room_id\":\"!dev\"}"), .respond(200, ForkDevLogReachTests.stateJSON)])
+        let network = ForkNetworkPath(monitoring: false)
+        network.update(offline: true)
+        let model = ForkDevLogModel(rest: ForkDevLogReachTests.rest(), cacheBase: ForkDevLogReachTests.tempBase(), network: network)
+        await model.refresh()
+        #expect(model.problem == "This iPhone is offline.")
+        network.update(offline: false)
+        await model.networkChanged(offline: false)
+        #expect(model.problem == nil)
+        #expect(!model.isWaitingForNetwork)
+        #expect(model.tickets.map(\.id) == ["T-1"])
+    }
+
+    @Test
+    func goingOfflineShowsTheBannerImmediately() async {
+        ForkScriptedServer.reset([.respond(200, "{\"room_id\":\"!dev\"}"), .respond(200, ForkDevLogReachTests.stateJSON)])
+        let network = ForkNetworkPath(monitoring: false)
+        let model = ForkDevLogModel(rest: ForkDevLogReachTests.rest(), cacheBase: ForkDevLogReachTests.tempBase(), network: network)
+        #expect(await model.refresh() == 10)
+        network.update(offline: true)
+        await model.networkChanged(offline: true)
+        #expect(model.problem == "This iPhone is offline.")
+        #expect(model.phase == .loaded)                 // the tickets stay on screen
+        #expect(model.tickets.map(\.id) == ["T-1"])
+        #expect(model.nextRetryAt == nil)
+    }
+
+    @Test
+    func requestsFailFastInsteadOfWaitingForConnectivity() async {
+        #expect(ForkMatrixREST.waitsForConnectivity == false)
+    }
+}
+
+/// E6 D2 (Test Round 1, steps c1 + r2): build codes, delivery time, plan + API-rate cost per finished ticket, the running total,
+/// and an honest label when a build is already on TestFlight waiting for the operator's check.
+struct ForkDevLogMoneyTests {
+    static func ticket(_ id: String, stage: String = "delivered", micros: Int? = nil, apiMicros: Int? = nil, build: [String: ForkJSON]? = nil,
+                       updated: Int = 1_793_327_379_262, delivered: Int? = nil) -> ForkDevLogTicket {
+        var object: [String: ForkJSON] = ["v": .number(1), "id": .string(id), "title": .string(id), "stage": .string(stage), "updated_ts": .number(Double(updated))]
+        var cost: [String: ForkJSON] = [:]
+        if let micros { cost["total_usd_micros"] = .number(Double(micros)) }
+        if let apiMicros { cost["api_rate_usd_micros"] = .number(Double(apiMicros)) }
+        if !cost.isEmpty { object["cost"] = .object(cost) }
+        if let build { object["build"] = .object(build) }
+        if let delivered { object["delivered_ts"] = .number(Double(delivered)) }
+        return ForkDevLogTicket.parse(content: .object(object))!
+    }
+
+    @Test
+    func buildLineUsesTheCodeWhenPresent() {
+        let coded = Self.ticket("T-5", build: ["number": .string("202610300709"), "code": .string("E5"), "testflight": .string("VALID")])
+        #expect(coded.build?.code == "E5")
+        #expect(ForkDevLogFormat.buildLine(coded.build) == "E5 · 202610300709")
+        #expect(ForkDevLogFormat.buildLine(Self.ticket("T-4", build: ["number": .string("202610300213")]).build) == "Build 202610300213")
+        #expect(ForkDevLogFormat.buildLine(Self.ticket("T-6", build: ["code": .string("E6")]).build) == "E6")
+        #expect(ForkDevLogFormat.buildLine(Self.ticket("T-7", build: ["code": .number(6)]).build) == nil) // wrong type: hidden, still decodes
+        #expect(ForkDevLogFormat.buildLine(nil) == nil)
+    }
+
+    @Test
+    func deliveredTimePrefersDeliveredTS() {
+        #expect(Self.ticket("T-1", delivered: 1_793_314_371_739).deliveredMS == 1_793_314_371_739)
+        #expect(Self.ticket("T-2", updated: 1_793_330_438_837).deliveredMS == 1_793_330_438_837)
+        #expect(Self.ticket("T-3", stage: "processing").deliveredMS == nil)
+        #expect(Self.ticket("T-4", stage: "failed").deliveredMS == nil)
+    }
+
+    @Test
+    func totalsAreIntegerMicroDollars() {
+        // The five priced tickets on #tj-devlog at E5 (one, devlog-reach, has no cost block).
+        let tickets = [Self.ticket("A", micros: 1_041_830, apiMicros: 82_377_554), Self.ticket("B", micros: 1_947_850, apiMicros: 156_725_005),
+                       Self.ticket("C", micros: 318_984, apiMicros: 29_962_136), Self.ticket("D", micros: 31_855, apiMicros: 2_992_122),
+                       Self.ticket("E"), Self.ticket("F", stage: "processing", micros: 1_995_059, apiMicros: 43_176_296)]
+        let total = ForkDevLogTotals(tickets: tickets)
+        #expect(total.planMicros == 5_335_578)
+        #expect(total.apiRateMicros == 315_233_113)
+        #expect(total.headline == "Total so far: $5.34 of your plan · $315.23 API-rate")
+        // No float drift: three thirds of a dollar are a dollar, not $0.99 or $1.0000001.
+        let thirds = ForkDevLogTotals(tickets: (0..<3).map { Self.ticket("T\($0)", micros: 333_334) })
+        #expect(thirds.planMicros == 1_000_002)
+        #expect(thirds.headline == "Total so far: $1.00 of your plan")
+        #expect(ForkDevLogTotals(tickets: [Self.ticket("E")]).headline == nil)
+    }
+
+    @Test
+    func legacyDollarTotalsJoinTheSumAsMicros() {
+        let content = ForkJSON.object(["v": .number(1), "id": .string("T-L"), "title": .string("L"), "stage": .string("delivered"),
+                                       "cost": .object(["total_usd": .string("$4.21")])])
+        let ticket = ForkDevLogTicket.parse(content: content)!
+        #expect(ticket.cost?.totalMicros == 4_210_000)
+        #expect(ForkDevLogTotals(tickets: [ticket]).planMicros == 4_210_000)
+    }
+
+    @Test
+    func microMoneyFormatting() {
+        #expect(ForkDevLogFormat.money(micros: 0) == "$0.00")
+        #expect(ForkDevLogFormat.money(micros: 836) == "$0.0008")
+        #expect(ForkDevLogFormat.money(micros: 10_000) == "$0.01")
+        #expect(ForkDevLogFormat.money(micros: 1_005_000) == "$1.01")     // half a cent rounds up
+        #expect(ForkDevLogFormat.money(micros: 1_004_999) == "$1.00")
+        #expect(ForkDevLogFormat.money(micros: 12_345_678_900) == "$12,345.68")
+    }
+
+    @Test
+    func finishedRowShowsDeliveryPlanAndAPIRate() {
+        let row = ForkDevLogFormat.historyCost(Self.ticket("T", micros: 318_984, apiMicros: 29_962_136))
+        #expect(row == "$0.32 plan · $29.96 API-rate")
+        #expect(ForkDevLogFormat.historyCost(Self.ticket("T", micros: 31_855)) == "$0.03 plan")
+        #expect(ForkDevLogFormat.historyCost(Self.ticket("T")) == nil)
+    }
+
+    @Test
+    func processingWithAValidTestFlightBuildWaitsOnTheOperator() {
+        let valid = ForkStageStepperLayout.layout(stage: "processing", stages: [], progressDone: 6, testflight: "VALID")
+        #expect(valid.label == "On TestFlight · your check")
+        #expect(ForkStageStepperLayout.layout(stage: "processing", stages: [], progressDone: 6, testflight: nil).label == "Processing")
+        #expect(ForkStageStepperLayout.layout(stage: "processing", stages: [], progressDone: 6, testflight: "PROCESSING").label == "Processing")
+        #expect(ForkStageStepperLayout.layout(stage: "delivered", stages: [], progressDone: 7, testflight: "VALID").label == "Delivered")
+    }
+}
+
 /// A scripted homeserver: each request takes the next step (a status + body, or a transport error); the last step repeats.
 nonisolated final class ForkScriptedServer: URLProtocol {
     enum Step: Sendable {

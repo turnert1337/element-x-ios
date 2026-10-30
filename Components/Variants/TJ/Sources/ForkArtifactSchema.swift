@@ -576,6 +576,15 @@ nonisolated struct ForkLenientDouble: Decodable, Equatable, Sendable {
     }
 }
 
+/// An integer that never fails its parent's decode: a wrong type reads as nil (E6 D2 `delivered_ts`).
+nonisolated struct ForkLenientInt: Decodable, Equatable, Sendable {
+    let value: Int?
+
+    init(from decoder: Decoder) throws {
+        value = try? decoder.singleValueContainer().decode(Int.self)
+    }
+}
+
 extension KeyedDecodingContainer {
     nonisolated func decodeLenientDouble(forKey key: Key) -> Double? {
         (try? decodeIfPresent(ForkLenientDouble.self, forKey: key))?.value
@@ -697,10 +706,21 @@ nonisolated struct ForkDevLogTicket: Decodable, Equatable, Sendable, Identifiabl
         let forkSHA: String?
         let xcode: String?
         let testflight: String?
+        /// E6 D2: the universal build code ("E5"), shown before the TestFlight number.
+        let code: String?
 
         enum CodingKeys: String, CodingKey {
-            case number, xcode, testflight
+            case number, xcode, testflight, code
             case forkSHA = "fork_sha"
+        }
+
+        init(from decoder: Decoder) throws {
+            let c = try? decoder.container(keyedBy: CodingKeys.self)
+            number = try? c?.decodeIfPresent(String.self, forKey: .number)
+            forkSHA = try? c?.decodeIfPresent(String.self, forKey: .forkSHA)
+            xcode = try? c?.decodeIfPresent(String.self, forKey: .xcode)
+            testflight = try? c?.decodeIfPresent(String.self, forKey: .testflight)
+            code = try? c?.decodeIfPresent(String.self, forKey: .code)
         }
     }
 
@@ -769,6 +789,9 @@ nonisolated struct ForkDevLogTicket: Decodable, Equatable, Sendable, Identifiabl
     struct Cost: Decodable, Equatable, Sendable {
         let basis: String?
         let totalUSD: Double?
+        /// E6 D2: exact integer micro-USD for sums (the legacy dollar field converted once, rounded to the micro).
+        let totalMicros: Int?
+        let apiRateMicros: Int?
         /// rev 3.3: the API-rate equivalent of the same usage (shown under the basis line).
         let apiRateUSD: Double?
         /// rev 3.3: e.g. "only dev-Mac usage is visible, so this is an upper bound" (caption).
@@ -796,6 +819,9 @@ nonisolated struct ForkDevLogTicket: Decodable, Equatable, Sendable, Identifiabl
             basis = try? c.decodeIfPresent(String.self, forKey: .basis)
             totalUSD = c.decodeUSD(micros: .totalUSDMicros, legacy: .totalUSD)
             apiRateUSD = c.decodeMicros(.apiRateUSDMicros)
+            totalMicros = (try? c.decodeIfPresent(Int.self, forKey: .totalUSDMicros)).flatMap { $0 }
+                ?? c.decodeLenientDouble(forKey: .totalUSD).map { Int(($0 * 1_000_000).rounded()) }
+            apiRateMicros = (try? c.decodeIfPresent(Int.self, forKey: .apiRateUSDMicros)).flatMap { $0 }
             note = try? c.decodeIfPresent(String.self, forKey: .note)
             provisionalUntil = try? c.decodeIfPresent(Int.self, forKey: .provisionalUntil)
             totalIsEstimate = try? c.decodeIfPresent(Bool.self, forKey: .totalIsEstimate)
@@ -832,6 +858,8 @@ nonisolated struct ForkDevLogTicket: Decodable, Equatable, Sendable, Identifiabl
     let build: Build?
     let cost: Cost?
     let links: Links?
+    /// E6 D2: optional ms when the ticket reached `delivered` (else `updated_ts` stands in).
+    let deliveredTS: ForkLenientInt?
 
     enum CodingKeys: String, CodingKey {
         case v, id, project, title, stage, stages, progress, request, plan, interpretations, items, gates, build, cost, links
@@ -839,6 +867,13 @@ nonisolated struct ForkDevLogTicket: Decodable, Equatable, Sendable, Identifiabl
         case createdTS = "created_ts"
         case updatedTS = "updated_ts"
         case decisionsOpen = "decisions_open"
+        case deliveredTS = "delivered_ts"
+    }
+
+    /// When a delivered ticket was delivered (ms); nil for any other stage.
+    var deliveredMS: Int? {
+        guard stage == "delivered" else { return nil }
+        return deliveredTS?.value ?? updatedTS
     }
 
     static let defaultStages = ["queued", "planning", "building", "validating", "shipping", "processing", "delivered"]
@@ -899,7 +934,10 @@ nonisolated enum ForkStageStepperLayout {
         let label: String
     }
 
-    static func layout(stage: String, stages: [String], progressDone: Int?) -> Result {
+    /// E6 D2: Apple's processing is over once the build is VALID; the ticket then waits on the operator's check.
+    static let onTestFlightLabel = "On TestFlight · your check"
+
+    static func layout(stage: String, stages: [String], progressDone: Int?, testflight: String? = nil) -> Result {
         let stages = stages.isEmpty ? ForkDevLogTicket.defaultStages : stages
         let count = stages.count
         switch stage {
@@ -916,7 +954,8 @@ nonisolated enum ForkStageStepperLayout {
                     if position < index || (delivered && position == index) { return .done }
                     return position == index ? .current : .future
                 }
-                return Result(states: states, index: index, unknownCaption: nil, label: stage.capitalized)
+                let label = stage == "processing" && testflight == "VALID" ? onTestFlightLabel : stage.capitalized
+                return Result(states: states, index: index, unknownCaption: nil, label: label)
             }
             let states = (0..<count).map { $0 == 0 ? ForkStageStepperState.current : .future }
             return Result(states: states, index: 0, unknownCaption: stage, label: "Queued")

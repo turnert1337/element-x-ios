@@ -22,7 +22,7 @@ final class ForkHomeScreenDraft {
     var generated: UIImage?
     var status: String?
     var isWorking = false
-    var didOpenSafari = false
+    var flow = ForkHomeInstallFlow()
     /// The one-time loopback URL shown in the in-app Safari view (nil when not showing).
     var safariURL: ForkIdentifiedURL?
     var savedToPhotos = false
@@ -59,66 +59,17 @@ struct ForkHomeScreenSheet: View {
     let onDone: () -> Void
 
     @Environment(\.supportsImagePlayground) private var supportsImagePlayground
+    @Environment(\.openURL) private var openURL
     @State private var isShowingPlayground = false
     @State private var isShowingOtherWays = false
 
     var body: some View {
         NavigationStack {
             Form {
-                Section { preview }
-                Section("Label") {
-                    TextField("Label", text: $draft.label)
-                        .onChange(of: draft.label) { _, value in
-                            if value.count > ForkHomeIconSpec.maxLabel { draft.label = String(value.prefix(ForkHomeIconSpec.maxLabel)) }
-                        }
-                        .accessibilityIdentifier("tj_home-label")
-                    Text("\(draft.finalLabel.count)/\(ForkHomeIconSpec.maxLabel) characters").font(.caption).foregroundStyle(.secondary)
-                }
-                Section("Icon") {
-                    HStack {
-                        Text("Emoji")
-                        TextField("Emoji", text: $draft.emojiText)
-                            .multilineTextAlignment(.trailing)
-                            .onChange(of: draft.emojiText) { _, value in
-                                if let emoji = ForkHomeIconSpec.normalizedEmoji(value) {
-                                    draft.spec.emoji = emoji
-                                    if value != emoji { draft.emojiText = emoji }
-                                    draft.generated = nil
-                                }
-                            }
-                            .accessibilityIdentifier("tj_home-emoji")
-                    }
-                    swatches
-                    if supportsImagePlayground {
-                        Button {
-                            isShowingPlayground = true
-                        } label: {
-                            Label(draft.generated == nil ? "Generate with Apple" : "Generate again with Apple", systemImage: "sparkles")
-                        }
-                        .accessibilityIdentifier("tj_home-generate")
-                        if draft.generated != nil {
-                            Button("Use the emoji icon instead") { draft.generated = nil }
-                        }
-                    }
-                }
-                Section {
-                    Button {
-                        Task { await addWithProfile() }
-                    } label: {
-                        HStack {
-                            Label("Add to Home Screen", systemImage: "plus.app")
-                            if draft.isWorking { Spacer(); ProgressView() }
-                        }
-                    }
-                    .disabled(draft.isWorking)
-                    .accessibilityIdentifier("tj_home-add")
-                    if draft.didOpenSafari { steps }
-                    if let status = draft.status {
-                        Text(status).font(.footnote).foregroundStyle(.secondary).accessibilityIdentifier("tj_home-status")
-                    }
-                } footer: {
-                    Text("Downloads a small profile that only adds this icon; you install it in Settings. The profile and icon stay on this iPhone; nothing is uploaded.")
-                }
+                iconStep
+                addStep
+                settingsStep
+                checkStep
                 Section {
                     DisclosureGroup("Other ways", isExpanded: $isShowingOtherWays) { otherWays }
                         .accessibilityIdentifier("tj_home-other-ways")
@@ -190,18 +141,131 @@ struct ForkHomeScreenSheet: View {
         .padding(.vertical, 4)
     }
 
-    private var steps: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Text("Then in Settings:").font(.footnote.weight(.semibold))
-            ForEach(Array(["Tap Allow, then Close (the profile downloads).",
-                           "Open Settings → Profile Downloaded.",
-                           "Tap Install, enter your passcode, Install again.",
-                           "The icon is on your Home Screen. Tap it to open \(draft.title)."].enumerated()), id: \.offset) { index, step in
-                Text("\(index + 1). \(step)").font(.footnote)
+    // MARK: Steps (E6 H1)
+
+    private var iconStep: some View {
+        Section {
+            preview
+            TextField("Label", text: $draft.label)
+                .onChange(of: draft.label) { _, value in
+                    if value.count > ForkHomeIconSpec.maxLabel { draft.label = String(value.prefix(ForkHomeIconSpec.maxLabel)) }
+                }
+                .accessibilityIdentifier("tj_home-label")
+            HStack {
+                Text("Emoji")
+                TextField("Emoji", text: $draft.emojiText)
+                    .multilineTextAlignment(.trailing)
+                    .onChange(of: draft.emojiText) { _, value in
+                        if let emoji = ForkHomeIconSpec.normalizedEmoji(value) {
+                            draft.spec.emoji = emoji
+                            if value != emoji { draft.emojiText = emoji }
+                            draft.generated = nil
+                        }
+                    }
+                    .accessibilityIdentifier("tj_home-emoji")
             }
-            Text("Do it within 8 minutes; after that, tap Add to Home Screen again.").font(.caption).foregroundStyle(.secondary)
+            swatches
+            if supportsImagePlayground {
+                Button {
+                    isShowingPlayground = true
+                } label: {
+                    Label(draft.generated == nil ? "Generate with Apple" : "Generate again with Apple", systemImage: "sparkles")
+                }
+                .accessibilityIdentifier("tj_home-generate")
+                if draft.generated != nil {
+                    Button("Use the emoji icon instead") { draft.generated = nil }
+                }
+            }
+        } header: {
+            stepHeader(.icon, "Make the icon")
+        } footer: {
+            Text("Label: \(draft.finalLabel.count)/\(ForkHomeIconSpec.maxLabel) characters")
         }
-        .accessibilityIdentifier("tj_home-steps")
+    }
+
+    private var addStep: some View {
+        Section {
+            Button {
+                Task { await addWithProfile() }
+            } label: {
+                HStack {
+                    Label("Add to Home Screen", systemImage: "plus.app")
+                    if draft.isWorking { Spacer(); ProgressView() }
+                }
+            }
+            .disabled(draft.isWorking)
+            .accessibilityIdentifier("tj_home-add")
+            Text(ForkHomeInstallFlow.safariLine)
+                .font(.footnote)
+                .foregroundStyle(.secondary)
+                .accessibilityIdentifier("tj_home-safari-line")
+            if let status = draft.status {
+                Text(status).font(.footnote).foregroundStyle(.secondary).accessibilityIdentifier("tj_home-status")
+            }
+        } header: {
+            stepHeader(.add, "Add it")
+        } footer: {
+            Text("A small profile that only adds this icon. It stays on this iPhone; nothing is uploaded.")
+        }
+    }
+
+    private var settingsStep: some View {
+        Section {
+            Button {
+                if let url = ForkHomeInstallFlow.settingsURL { openURL(url) }
+                draft.flow.openedSettings()
+            } label: {
+                Label("Open Settings", systemImage: "gear")
+            }
+            .disabled(draft.flow.state(of: .settings) == .upcoming)
+            .accessibilityIdentifier("tj_home-open-settings")
+            VStack(alignment: .leading, spacing: 6) {
+                Text(ForkHomeInstallFlow.settingsLanding)
+                Text(ForkHomeInstallFlow.settingsPath).fontWeight(.semibold)
+                Text(ForkHomeInstallFlow.fallbackPath).foregroundStyle(.secondary)
+                Text(ForkHomeInstallFlow.timeLimit).font(.caption).foregroundStyle(.secondary)
+            }
+            .font(.footnote)
+            .accessibilityElement(children: .combine)
+            .accessibilityIdentifier("tj_home-steps")
+        } header: {
+            stepHeader(.settings, "Install it in Settings")
+        }
+        .opacity(draft.flow.state(of: .settings) == .upcoming ? 0.5 : 1)
+    }
+
+    private var checkStep: some View {
+        Section {
+            Text("Back on your Home Screen, is \(draft.finalLabel) there? Tap it and \(draft.title) opens.")
+                .font(.footnote)
+            Button {
+                onDone()
+            } label: {
+                Label("It's there. Done", systemImage: "checkmark.circle.fill")
+            }
+            .disabled(draft.flow.state(of: .check) == .upcoming)
+            .accessibilityIdentifier("tj_home-check-done")
+            Button("Not there? Start again") {
+                draft.flow.startOver()
+                draft.status = nil
+            }
+            .disabled(draft.flow.state(of: .check) == .upcoming)
+            .accessibilityIdentifier("tj_home-start-over")
+        } header: {
+            stepHeader(.check, "Check")
+        }
+        .opacity(draft.flow.state(of: .check) == .upcoming ? 0.5 : 1)
+    }
+
+    private func stepHeader(_ step: ForkHomeInstallFlow.Step, _ title: String) -> some View {
+        let state = draft.flow.state(of: step)
+        return HStack(spacing: 6) {
+            Image(systemName: state == .done ? "checkmark.circle.fill" : "\(step.rawValue).circle\(state == .active ? ".fill" : "")")
+                .foregroundStyle(state == .upcoming ? Color.secondary : Color.accentColor)
+            Text(title)
+        }
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("Step \(step.rawValue): \(title)\(state == .done ? ", done" : "")")
     }
 
     private var otherWays: some View {
@@ -232,10 +296,10 @@ struct ForkHomeScreenSheet: View {
         do {
             let profile = try draft.profile()
             guard let url = await ForkProfileInstaller.shared.serve(profile: profile) else {
-                draft.status = "Couldn't start the installer. Try again, or use Other ways."
+                draft.status = "Couldn't start the installer. Try again, or open Other ways below."
                 return
             }
-            draft.didOpenSafari = true
+            draft.flow.profileServed()
             draft.status = nil
             draft.safariURL = ForkIdentifiedURL(url: url)
         } catch {

@@ -177,3 +177,35 @@ struct ForkHomeScreenTests {
         #expect(Set(messages).count == messages.count)
     }
 }
+
+/// E6 H1 (Test Round 1, step h2): one guided path — make the icon, Add (Safari warns about the local address), one Open Settings
+/// step with the exact path, then a check. The path text is Apple's (support.apple.com/102400, read 2026-10-30).
+struct ForkHomeInstallFlowTests {
+    @Test
+    func stepsAdvanceInOrderAndCanStartOver() {
+        var flow = ForkHomeInstallFlow()
+        #expect(flow.state(of: .icon) == .active)
+        #expect(flow.state(of: .add) == .active)
+        #expect(flow.state(of: .settings) == .upcoming)
+        #expect(flow.state(of: .check) == .upcoming)
+        flow.profileServed()
+        #expect(flow.state(of: .add) == .done)
+        #expect(flow.state(of: .settings) == .active)
+        flow.openedSettings()
+        #expect(flow.state(of: .settings) == .done)
+        #expect(flow.state(of: .check) == .active)
+        flow.startOver()
+        #expect(flow.state(of: .add) == .active)
+        #expect(flow.state(of: .check) == .upcoming)
+    }
+
+    @Test
+    func copyCarriesTheRealSettingsPath() {
+        #expect(ForkHomeInstallFlow.safariLine.contains("not secure"))
+        #expect(ForkHomeInstallFlow.safariLine.contains("Allow"))
+        #expect(ForkHomeInstallFlow.settingsPath.contains("Profile Downloaded"))
+        #expect(ForkHomeInstallFlow.settingsPath.contains("Install"))
+        #expect(ForkHomeInstallFlow.fallbackPath.contains("General → VPN & Device Management"))
+        #expect(ForkHomeInstallFlow.settingsURL == URL(string: UIApplication.openSettingsURLString))
+    }
+}

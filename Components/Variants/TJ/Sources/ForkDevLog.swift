@@ -68,6 +68,12 @@ nonisolated enum ForkDevLogProblem: Equatable, Sendable {
         return .unexpected("\(ns.domain) \(ns.code)")
     }
 
+    /// E6 D1: while the network path is down, any transport error is "offline" (Airplane Mode used to read "took too long").
+    static func from(_ error: Error, pathOffline: Bool) -> ForkDevLogProblem? {
+        guard let problem = from(error) else { return nil }
+        return pathOffline && error is URLError ? .offline : problem
+    }
+
     static func isCancellation(_ error: Error) -> Bool {
         error is CancellationError || (error as? URLError)?.code == .cancelled
     }
@@ -178,6 +184,10 @@ final class ForkDevLogModel {
     private(set) var loadedAt: Date?
     private(set) var isShowingSaved = false
     private(set) var isRetrying = false
+    /// E6 D1: offline per the network path; polling stops and the next path change retries.
+    private(set) var isWaitingForNetwork = false
+    @ObservationIgnored let network: ForkNetworkPath
+    @ObservationIgnored private var pathTask: Task<Void, Never>?
     @ObservationIgnored private var failures = 0
     @ObservationIgnored private var visibleViews = 0
     @ObservationIgnored private var pollTask: Task<Void, Never>?
@@ -185,8 +195,9 @@ final class ForkDevLogModel {
     @ObservationIgnored private var cache: ForkDevLogCache?
     @ObservationIgnored private var host = "your homeserver"
 
-    init(rest: ForkMatrixREST, cacheBase: URL = ForkArtifactCache.baseDirectory) {
+    init(rest: ForkMatrixREST, cacheBase: URL = ForkArtifactCache.baseDirectory, network: ForkNetworkPath = .shared) {
         self.rest = rest
+        self.network = network
         let cache = ForkDevLogCache(userID: rest.userID, roomKey: Self.roomKey, base: cacheBase)
         self.cache = cache
         if let snapshot = cache.load() {
@@ -208,6 +219,10 @@ final class ForkDevLogModel {
         tickets.filter { !$0.isInPipeline }
     }
 
+    var totals: ForkDevLogTotals {
+        ForkDevLogTotals(tickets: tickets)
+    }
+
     func ticket(id: String) -> ForkDevLogTicket? {
         tickets.first { $0.id == id }
     }
@@ -215,6 +230,7 @@ final class ForkDevLogModel {
     /// The list and an open receipt both count, so pushing a receipt keeps the poll running.
     func appeared() {
         visibleViews += 1
+        startWatchingNetwork()
         startPolling()
     }
 
@@ -222,6 +238,19 @@ final class ForkDevLogModel {
         visibleViews = max(0, visibleViews - 1)
         guard visibleViews == 0 else { return }
         stopPolling()
+        pathTask?.cancel()
+        pathTask = nil
+    }
+
+    /// E6 D1: the path went down → say so now and drop the in-flight request; it came back → fetch at once.
+    func networkChanged(offline: Bool) async {
+        if offline {
+            stopPolling()
+            showOffline()
+        } else if isWaitingForNetwork || problem != nil {
+            isWaitingForNetwork = false
+            if visibleViews > 0 { retryNow() } else { await refresh() }
+        }
     }
 
     /// The Retry button: fetch now, then carry on polling.
@@ -233,6 +262,10 @@ final class ForkDevLogModel {
     /// One fetch. Returns the delay before the next one, or nil when retrying can't help (signed out, expired, not joined).
     @discardableResult
     func refresh() async -> TimeInterval? {
+        guard !network.isOffline else {
+            showOffline()
+            return nil
+        }
         isRetrying = problem != nil
         defer { isRetrying = false }
         do {
@@ -247,11 +280,16 @@ final class ForkDevLogModel {
             phase = .loaded
             problem = nil
             failures = 0
+            isWaitingForNetwork = false
             isShowingSaved = false
             loadedAt = Date()
             return ForkDevLogBackoff.pollInterval
         } catch {
-            guard let failure = ForkDevLogProblem.from(error) else { return ForkDevLogBackoff.pollInterval }
+            guard let failure = ForkDevLogProblem.from(error, pathOffline: network.isOffline) else { return ForkDevLogBackoff.pollInterval }
+            if failure == .offline, network.isOffline {
+                showOffline()
+                return nil
+            }
             if let pinned = await rest.currentHost() { host = pinned }
             failures += 1
             switch failure {
@@ -280,6 +318,24 @@ final class ForkDevLogModel {
     }
 
     // MARK: - Private
+
+    private func showOffline() {
+        let message = ForkDevLogProblem.offline.message(host: host)
+        problem = message
+        isWaitingForNetwork = true
+        nextRetryAt = nil
+        if tickets.isEmpty, phase != .notJoined { phase = .error(message) }
+    }
+
+    private func startWatchingNetwork() {
+        guard pathTask == nil else { return }
+        let changes = network.changes()
+        pathTask = Task { [weak self] in
+            for await offline in changes {
+                await self?.networkChanged(offline: offline)
+            }
+        }
+    }
 
     private func startPolling() {
         guard pollTask == nil else { return }
@@ -360,6 +416,13 @@ struct ForkDevLogScreen: View {
                 if model.tickets.isEmpty {
                     Text("No tickets yet.").foregroundStyle(.secondary)
                 }
+                if let headline = model.totals.headline {
+                    Section {
+                        Text(headline)
+                            .font(.subheadline.weight(.semibold).monospacedDigit())
+                            .accessibilityIdentifier("tj_devlog-total")
+                    }
+                }
                 if !model.pipeline.isEmpty {
                     Section("In the pipeline") {
                         ForEach(model.pipeline) { ticket in
@@ -417,6 +480,8 @@ struct ForkDevLogStatusBanner: View {
                     SwiftUI.TimelineView(.periodic(from: .now, by: 1)) { context in
                         if model.isRetrying {
                             Text("Retrying…")
+                        } else if model.isWaitingForNetwork {
+                            Text("Retries when this iPhone is back online.")
                         } else if let next = model.nextRetryAt {
                             Text("Retrying in \(max(0, Int(next.timeIntervalSince(context.date).rounded(.up)))) s")
                         } else {
@@ -449,7 +514,7 @@ struct ForkDevLogPipelineRow: View {
             HStack {
                 if let label = ticket.progress?.label { Text(label) }
                 Spacer()
-                if let number = ticket.build?.number { Text("Build \(number)").monospacedDigit() }
+                if let build = ForkDevLogFormat.buildLine(ticket.build) { Text(build).monospacedDigit() }
             }
             .font(.caption)
             .foregroundStyle(.secondary)
@@ -471,12 +536,22 @@ struct ForkDevLogHistoryRow: View {
             ProgressView(value: ForkDevLogFormat.fraction(ticket))
                 .tint(ticket.stage == "failed" ? .red : .accentColor)
             HStack {
-                if let updated = ticket.updatedTS { Text(ForkDevLogFormat.relative(updated)) }
+                if let delivered = ticket.deliveredMS {
+                    Text("Delivered \(ForkDevLogFormat.absolute(delivered))")
+                } else if let updated = ticket.updatedTS {
+                    Text(ForkDevLogFormat.relative(updated))
+                }
                 Spacer()
-                if let cost = ticket.cost?.totalUSD { Text(ForkDevLogFormat.usd(cost, estimate: ticket.cost?.totalIsEstimate == true)) }
+                if let build = ForkDevLogFormat.buildLine(ticket.build) { Text(build).monospacedDigit() }
             }
             .font(.caption)
             .foregroundStyle(.secondary)
+            if let cost = ForkDevLogFormat.historyCost(ticket) {
+                Text(cost)
+                    .font(.caption.monospacedDigit())
+                    .foregroundStyle(.secondary)
+                    .accessibilityIdentifier("tj_devlog-row-cost")
+            }
         }
         .padding(.vertical, 2)
     }
@@ -507,7 +582,8 @@ struct ForkStageStepper: View {
     @State private var pulse = false
 
     var body: some View {
-        let layout = ForkStageStepperLayout.layout(stage: ticket.stage, stages: ticket.resolvedStages, progressDone: ticket.progress?.done)
+        let layout = ForkStageStepperLayout.layout(stage: ticket.stage, stages: ticket.resolvedStages, progressDone: ticket.progress?.done,
+                                                   testflight: ticket.build?.testflight)
         VStack(alignment: .leading, spacing: 4) {
             HStack(spacing: 0) {
                 ForEach(Array(layout.states.enumerated()), id: \.offset) { index, state in
@@ -550,7 +626,48 @@ struct ForkStageStepper: View {
     }
 }
 
-enum ForkDevLogFormat {
+nonisolated enum ForkDevLogFormat {
+    /// E6 D2: "E5 · 202610300709"; "Build 202610300709" before codes; "E6" before a number.
+    static func buildLine(_ build: ForkDevLogTicket.Build?) -> String? {
+        switch (build?.code, build?.number) {
+        case let (code?, number?): "\(code) · \(number)"
+        case let (nil, number?): "Build \(number)"
+        case let (code?, nil): code
+        case (nil, nil): nil
+        }
+    }
+
+    /// E6 D2 list row: "$0.32 plan · $29.96 API-rate" (nil without a cost block).
+    static func historyCost(_ ticket: ForkDevLogTicket) -> String? {
+        guard let plan = ticket.cost?.totalMicros else { return nil }
+        let estimate = ticket.cost?.totalIsEstimate == true ? " est." : ""
+        var line = money(micros: plan) + estimate + " plan"
+        if let api = ticket.cost?.apiRateMicros { line += " · \(money(micros: api)) API-rate" }
+        return line
+    }
+
+    /// Integer micro-USD → dollars, rounding half up to the cent; `$0.0008` style for a non-zero amount under a cent (§13.7).
+    static func money(micros: Int) -> String {
+        let sign = micros < 0 ? "-" : ""
+        let magnitude = abs(micros)
+        if magnitude > 0, magnitude < 10_000 {
+            let tenThousandths = (magnitude + 50) / 100
+            if tenThousandths < 100 { return "\(sign)$0.\(String(format: "%04d", tenThousandths))" }
+        }
+        let cents = (magnitude + 5000) / 10_000
+        return "\(sign)$\(grouped(cents / 100)).\(String(format: "%02d", cents % 100))"
+    }
+
+    private static func grouped(_ value: Int) -> String {
+        var digits = String(value)
+        var out = ""
+        while digits.count > 3 {
+            out = "," + digits.suffix(3) + out
+            digits.removeLast(3)
+        }
+        return digits + out
+    }
+
     static func fraction(_ ticket: ForkDevLogTicket) -> Double {
         let total = max(ticket.progress?.total ?? ticket.resolvedStages.count, 1)
         return min(1, max(0, Double(ticket.progress?.done ?? 0) / Double(total)))
@@ -585,6 +702,27 @@ enum ForkDevLogFormat {
     static func tokens(_ value: Int?) -> String {
         guard let value else { return "–" }
         return value.formatted(.number.notation(.compactName))
+    }
+}
+
+/// E6 D2: the Dev log's running total — every ticket's cost block summed in integer micro-USD (no float drift).
+nonisolated struct ForkDevLogTotals: Equatable, Sendable {
+    let planMicros: Int?
+    let apiRateMicros: Int?
+
+    init(tickets: [ForkDevLogTicket]) {
+        let plan = tickets.compactMap { $0.cost?.totalMicros }
+        let api = tickets.compactMap { $0.cost?.apiRateMicros }
+        planMicros = plan.isEmpty ? nil : plan.reduce(0, +)
+        apiRateMicros = api.isEmpty ? nil : api.reduce(0, +)
+    }
+
+    /// "Total so far: $5.34 of your plan · $315.23 API-rate" (nil until some ticket has a cost).
+    var headline: String? {
+        guard let planMicros else { return nil }
+        var line = "Total so far: \(ForkDevLogFormat.money(micros: planMicros)) of your plan"
+        if let apiRateMicros { line += " · \(ForkDevLogFormat.money(micros: apiRateMicros)) API-rate" }
+        return line
     }
 }
 
@@ -635,10 +773,14 @@ struct ForkDevLogReceipt: View {
                 if let label = ticket.progress?.label { Text(label).font(.caption) }
             }
             HStack(spacing: 6) {
-                if let number = ticket.build?.number { Text("Build \(number)").monospacedDigit() }
-                if let tf = ticket.build?.testflight { Text(ticket.build?.number == nil ? "TestFlight \(tf)" : "· TestFlight \(tf)") }
+                if let build = ForkDevLogFormat.buildLine(ticket.build) { Text(build).monospacedDigit() }
+                if let tf = ticket.build?.testflight { Text(ForkDevLogFormat.buildLine(ticket.build) == nil ? "TestFlight \(tf)" : "· TestFlight \(tf)") }
                 Spacer()
-                if let updated = ticket.updatedTS { Text("Updated \(ForkDevLogFormat.relative(updated))") }
+                if let delivered = ticket.deliveredMS {
+                    Text("Delivered \(ForkDevLogFormat.absolute(delivered))")
+                } else if let updated = ticket.updatedTS {
+                    Text("Updated \(ForkDevLogFormat.relative(updated))")
+                }
             }
             .font(.caption)
             .foregroundStyle(.secondary)

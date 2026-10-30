@@ -495,6 +495,113 @@ struct ForkSchedulePutStateTests {
     }
 }
 
+/// E6 S1 (Test Round 1, step e2): a Once saved at 11:16 for 11:17 was stored for TOMORROW (relay next_fire 2026-10-31T16:17Z).
+/// Root cause: the new-schedule default is 9:00 AM tomorrow once 9:00 has passed, and the time-only picker kept that date.
+struct ForkScheduleOnceTests {
+    static let chicago = "America/Chicago"
+    static let zone = TimeZone(identifier: "America/Chicago")!
+    /// 2026-10-30 11:16:00 CDT, when the operator made the schedule.
+    static let roundOneNow = ForkScheduleFixtures.date("2026-10-30T16:16:00Z")
+
+    @Test
+    func roundOneReproPickingOnlyTheTimeLandsToday() {
+        var draft = ForkScheduleDraft.new(tz: Self.chicago, now: Self.roundOneNow, threadRoot: nil)
+        #expect(draft.repeatRule == .once)
+        #expect(draft.minute == 9 * 60)
+        #expect(draft.date == ForkCivilDate(year: 2026, month: 10, day: 31)) // 9:00 today has passed: the default rolls (the old trap)
+        draft.setTime(minute: 11 * 60 + 17, now: Self.roundOneNow, dateTouched: false)
+        #expect(draft.date == ForkCivilDate(year: 2026, month: 10, day: 30))
+        #expect(draft.dtstart == "2026-10-30T11:17:00")
+        #expect(draft.preview(now: Self.roundOneNow).map(ForkScheduleTime.utcString) == ["2026-10-30T16:17:00Z"])
+        #expect(draft.timingProblem(now: Self.roundOneNow) == nil)
+    }
+
+    @Test
+    func aTimeAlreadyPassedTodayMeansTomorrow() {
+        var draft = ForkScheduleDraft.new(tz: Self.chicago, now: Self.roundOneNow, threadRoot: nil)
+        draft.setTime(minute: 8 * 60, now: Self.roundOneNow, dateTouched: false)
+        #expect(draft.dtstart == "2026-10-31T08:00:00")
+    }
+
+    @Test
+    func aDateTheUserPickedIsKept() {
+        var draft = ForkScheduleDraft.new(tz: Self.chicago, now: Self.roundOneNow, threadRoot: nil)
+        draft.date = ForkCivilDate(year: 2026, month: 11, day: 3)
+        draft.setTime(minute: 8 * 60, now: Self.roundOneNow, dateTouched: true)
+        #expect(draft.dtstart == "2026-11-03T08:00:00")
+        // ...even when that date plus time is in the past: then saving is refused instead of guessing.
+        draft.date = ForkCivilDate(year: 2026, month: 10, day: 30)
+        draft.setTime(minute: 11 * 60, now: Self.roundOneNow, dateTouched: true)
+        #expect(draft.dtstart == "2026-10-30T11:00:00")
+        #expect(draft.timingProblem(now: Self.roundOneNow) == .inPast)
+    }
+
+    @Test
+    func repeatingRulesAlsoStartAtTheNextOccurrence() {
+        var draft = ForkScheduleDraft.new(tz: Self.chicago, now: Self.roundOneNow, threadRoot: nil)
+        draft.repeatRule = .daily
+        draft.setTime(minute: 11 * 60 + 17, now: Self.roundOneNow, dateTouched: false)
+        #expect(draft.preview(now: Self.roundOneNow, count: 1).map(ForkScheduleTime.utcString) == ["2026-10-30T16:17:00Z"])
+    }
+
+    @Test
+    func pastOrSecondsAwayOnceIsRefusedRepeatingIsNot() {
+        var draft = ForkScheduleDraft.new(sid: "t-0000", tz: Self.chicago, today: ForkCivilDate(year: 2026, month: 10, day: 30), threadRoot: nil)
+        draft.minute = 11 * 60 + 17
+        #expect(draft.timingProblem(now: Self.roundOneNow) == nil)                                       // 60 s ahead
+        #expect(draft.timingProblem(now: ForkScheduleFixtures.date("2026-10-30T16:16:45Z")) == .inPast) // 15 s: the relay may not see it in time
+        #expect(draft.timingProblem(now: ForkScheduleFixtures.date("2026-10-30T16:18:00Z")) == .inPast)
+        draft.repeatRule = .daily
+        #expect(draft.timingProblem(now: ForkScheduleFixtures.date("2026-10-30T16:18:00Z")) == nil)
+        #expect(ForkScheduleUI.words(.inPast) == "That time has passed. Pick a later time or date.")
+    }
+
+    @Test
+    func countdownWords() {
+        let now = Self.roundOneNow
+        func words(_ iso: String) -> String { ForkScheduleText.countdown(to: ForkScheduleFixtures.date(iso), now: now, zone: Self.zone) }
+        #expect(words("2026-10-30T16:16:20Z") == "Fires in under a minute")
+        #expect(words("2026-10-30T16:17:00Z") == "Fires in 1 min")
+        #expect(words("2026-10-30T16:18:10Z") == "Fires in 3 min")
+        #expect(words("2026-10-30T20:05:00Z") == "Fires today at 3:05 PM")
+        #expect(words("2026-10-31T05:00:00Z") == "Fires tomorrow at 12:00 AM")
+        #expect(words("2026-10-31T16:17:00Z") == "Fires tomorrow at 11:17 AM")
+        #expect(words("2026-10-31T17:00:00Z") == "Fires tomorrow at 12:00 PM")
+        #expect(words("2026-11-03T15:00:00Z") == "Fires Tuesday at 9:00 AM")          // CST by then
+        #expect(words("2026-11-20T15:00:00Z") == "Fires Fri, Nov 20 at 9:00 AM")
+        #expect(words("2027-01-04T15:00:00Z") == "Fires Mon, Jan 4, 2027 at 9:00 AM")
+        #expect(words("2026-10-30T16:16:00Z") == "That time has passed")
+        #expect(words("2026-10-29T16:16:00Z") == "That time has passed")
+    }
+
+    @Test
+    func onceInstantMatchesTheSharedVectors() throws {
+        var checked = 0
+        for vector in try ForkScheduleFixtures.vectors() where vector["error"] == nil && (vector["rrule"] == nil || vector["rrule"] == .null) {
+            let id = vector["id"]?.string ?? "?"
+            let zone = try ForkScheduleTime.zone(vector["tz"]?.string ?? Self.chicago)
+            let start = try ForkScheduleRecurrence.dtstart(vector["dtstart"]?.string)
+            let instant = ForkScheduleOnce.instant(date: start.date, minute: start.minute, zone: zone)
+            if let expected = vector["expect"]?.array?.compactMap(\.string).first {
+                #expect(ForkScheduleTime.utcString(instant) == expected, "\(id)")
+            } else {
+                // "then none": the one instant is before `after`.
+                #expect(instant < ForkScheduleFixtures.date(try #require(vector["after"]?.string)), "\(id)")
+            }
+            checked += 1
+        }
+        #expect(checked >= 3)
+    }
+
+    @Test
+    func nextDateAcrossTheFallBackNight() {
+        // 2026-11-01 00:30 CDT: 1:30 still comes today (its first, CDT occurrence), 0:15 already passed.
+        let now = ForkScheduleFixtures.date("2026-11-01T05:30:00Z")
+        #expect(ForkScheduleOnce.nextDate(minute: 90, now: now, zone: Self.zone) == ForkCivilDate(year: 2026, month: 11, day: 1))
+        #expect(ForkScheduleOnce.nextDate(minute: 15, now: now, zone: Self.zone) == ForkCivilDate(year: 2026, month: 11, day: 2))
+    }
+}
+
 /// A stub homeserver that records every request and answers a state PUT with a numbered event id.
 nonisolated final class ForkScheduleStateServer: URLProtocol {
     struct Request: Sendable {
