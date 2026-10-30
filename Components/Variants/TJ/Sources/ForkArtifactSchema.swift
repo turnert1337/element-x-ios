@@ -586,6 +586,11 @@ extension KeyedDecodingContainer {
         if let value = try? decodeIfPresent(Int.self, forKey: micros) { return Double(value) / 1_000_000 }
         return decodeLenientDouble(forKey: legacy)
     }
+
+    /// Dollars from an integer micro-USD field (nil when absent, null or not an integer).
+    nonisolated func decodeMicros(_ key: Key) -> Double? {
+        (try? decodeIfPresent(Int.self, forKey: key)).flatMap { $0 }.map { Double($0) / 1_000_000 }
+    }
 }
 
 nonisolated struct ForkDevLogTicket: Decodable, Equatable, Sendable, Identifiable {
@@ -721,6 +726,8 @@ nonisolated struct ForkDevLogTicket: Decodable, Equatable, Sendable, Identifiabl
         let cacheRead: Int?
         let cacheWrite: Int?
         let costUSD: Double?
+        /// rev 3.3: the same tokens at API list price (secondary; `costUSD` is the prorated plan share).
+        let apiRateUSD: Double?
         let durationMS: Int?
         let source: String?
 
@@ -730,6 +737,7 @@ nonisolated struct ForkDevLogTicket: Decodable, Equatable, Sendable, Identifiabl
             case cacheWrite = "cache_write"
             case costUSD = "cost_usd"
             case costUSDMicros = "cost_usd_micros"
+            case apiRateUSDMicros = "api_rate_usd_micros"
             case durationMS = "duration_ms"
         }
 
@@ -743,6 +751,7 @@ nonisolated struct ForkDevLogTicket: Decodable, Equatable, Sendable, Identifiabl
             cacheRead = try? c.decodeIfPresent(Int.self, forKey: .cacheRead)
             cacheWrite = try? c.decodeIfPresent(Int.self, forKey: .cacheWrite)
             costUSD = c.decodeUSD(micros: .costUSDMicros, legacy: .costUSD)
+            apiRateUSD = c.decodeMicros(.apiRateUSDMicros)
             durationMS = try? c.decodeIfPresent(Int.self, forKey: .durationMS)
             source = try? c.decodeIfPresent(String.self, forKey: .source)
         }
@@ -760,6 +769,12 @@ nonisolated struct ForkDevLogTicket: Decodable, Equatable, Sendable, Identifiabl
     struct Cost: Decodable, Equatable, Sendable {
         let basis: String?
         let totalUSD: Double?
+        /// rev 3.3: the API-rate equivalent of the same usage (shown under the basis line).
+        let apiRateUSD: Double?
+        /// rev 3.3: e.g. "only dev-Mac usage is visible, so this is an upper bound" (caption).
+        let note: String?
+        /// rev 3.3: ms; while in the future the prorated share can still fall ("Provisional until …").
+        let provisionalUntil: Int?
         let totalIsEstimate: Bool?
         let coverage: String?
         let coverageNote: String?
@@ -767,9 +782,11 @@ nonisolated struct ForkDevLogTicket: Decodable, Equatable, Sendable, Identifiabl
         let runs: [Run]?
 
         enum CodingKeys: String, CodingKey {
-            case basis, coverage, tokens, runs
+            case basis, coverage, tokens, runs, note
             case totalUSD = "total_usd"
             case totalUSDMicros = "total_usd_micros"
+            case apiRateUSDMicros = "api_rate_usd_micros"
+            case provisionalUntil = "provisional_until"
             case totalIsEstimate = "total_is_estimate"
             case coverageNote = "coverage_note"
         }
@@ -778,6 +795,9 @@ nonisolated struct ForkDevLogTicket: Decodable, Equatable, Sendable, Identifiabl
             let c = try decoder.container(keyedBy: CodingKeys.self)
             basis = try? c.decodeIfPresent(String.self, forKey: .basis)
             totalUSD = c.decodeUSD(micros: .totalUSDMicros, legacy: .totalUSD)
+            apiRateUSD = c.decodeMicros(.apiRateUSDMicros)
+            note = try? c.decodeIfPresent(String.self, forKey: .note)
+            provisionalUntil = try? c.decodeIfPresent(Int.self, forKey: .provisionalUntil)
             totalIsEstimate = try? c.decodeIfPresent(Bool.self, forKey: .totalIsEstimate)
             coverage = try? c.decodeIfPresent(String.self, forKey: .coverage)
             coverageNote = try? c.decodeIfPresent(String.self, forKey: .coverageNote)

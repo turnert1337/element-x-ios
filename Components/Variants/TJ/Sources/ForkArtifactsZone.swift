@@ -17,6 +17,8 @@ struct ForkArtifactsActions {
     var newArtifact: () -> Void = { }
     var requestChange: (ForkArtifactEntry) -> Void = { _ in }
     var enterFullScreen: () -> Void = { }
+    /// §13.3: the icon maker sheet for this artifact.
+    var addToHomeScreen: (ForkArtifactEntry) -> Void = { _ in }
 }
 
 // MARK: - Shared pieces
@@ -213,6 +215,10 @@ struct ForkArtifactHeaderMenu: View {
             if let entry = model.selectedEntry, entry.pipe == .nas, entry.isHTML {
                 Button { actions.requestChange(entry) } label: { Label("Request a change", systemImage: "wand.and.sparkles") }
                     .accessibilityIdentifier("tj_artifacts-request-change")
+            }
+            if let entry = model.selectedEntry {
+                Button { actions.addToHomeScreen(entry) } label: { Label("Add to Home Screen…", systemImage: "plus.app") }
+                    .accessibilityIdentifier("tj_artifacts-add-home")
             }
             Button { Task { await model.refresh() } } label: { Label("Refresh", systemImage: "arrow.clockwise") }
             if let entry = model.selectedEntry, let summary = entry.summary, !summary.isEmpty {

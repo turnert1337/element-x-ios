@@ -2,12 +2,160 @@
 // TJ fork: Dev log list + receipts (iOS Workshop, Element card).
 // Based on Element X iOS. SPDX-License-Identifier: AGPL-3.0-only
 //
-// Spec: WatchLab/Element/03_ARTIFACTS_SPEC.md rev 3, §3.4 (ticket schema + client rules), §5.7 (screens), D8.
+// Spec: WatchLab/Element/03_ARTIFACTS_SPEC.md rev 3.4, §3.4 (ticket schema + client rules), §5.7 (screens), D8,
+// §13.7 (build 4: every failure has its own message, the last tickets stay on screen while it retries with backoff, Retry).
 // Native SwiftUI in PodLight DevKit's information architecture (title + 7-step stepper + progress). No DevKit networking:
 // tickets are `ai.autopute.devlog.ticket` state events in #tj-devlog, read over REST with the operator's own session.
 //
 
 import SwiftUI
+
+// MARK: - Failures (§13.7): one specific message per cause
+
+nonisolated enum ForkDevLogProblem: Equatable, Sendable {
+    case offline
+    case connectionLost
+    case timedOut
+    case cannotFindHost
+    case cannotConnect
+    case secureConnection
+    case network(code: Int)
+    case rateLimited
+    case server(status: Int)
+    case http(status: Int)
+    case badResponse
+    case hostChanged
+    case roomMissing
+    case notJoined
+    case sessionExpired
+    case notSignedIn
+    case unexpected(String)
+
+    /// nil for a cancellation: a cancelled poll throws `CancellationError` or, from URLSession, `URLError(.cancelled)`.
+    /// Neither is a failure (build 3 showed "Can't reach the Dev log right now" for the URLSession one).
+    static func from(_ error: Error) -> ForkDevLogProblem? {
+        if isCancellation(error) { return nil }
+        if let rest = error as? ForkMatrixREST.RESTError {
+            switch rest {
+            case .noSession: return .notSignedIn
+            case .hostMismatch: return .hostChanged
+            case .sessionExpired: return .sessionExpired
+            case .forbidden: return .notJoined
+            case .notFound: return .roomMissing
+            case .http(429): return .rateLimited
+            case .http(let status) where status >= 500: return .server(status: status)
+            case .http(let status): return .http(status: status)
+            case .badResponse: return .badResponse
+            }
+        }
+        if let url = error as? URLError {
+            switch url.code {
+            case .notConnectedToInternet, .dataNotAllowed, .internationalRoamingOff, .callIsActive: return .offline
+            case .networkConnectionLost: return .connectionLost
+            case .timedOut: return .timedOut
+            case .cannotFindHost, .dnsLookupFailed: return .cannotFindHost
+            case .cannotConnectToHost: return .cannotConnect
+            case .secureConnectionFailed, .serverCertificateUntrusted, .serverCertificateHasBadDate,
+                 .serverCertificateNotYetValid, .serverCertificateHasUnknownRoot, .clientCertificateRejected,
+                 .clientCertificateRequired, .appTransportSecurityRequiresSecureConnection:
+                return .secureConnection
+            case .badServerResponse, .cannotParseResponse, .cannotDecodeContentData, .cannotDecodeRawData, .zeroByteResource:
+                return .badResponse
+            default: return .network(code: url.errorCode)
+            }
+        }
+        let ns = error as NSError
+        return .unexpected("\(ns.domain) \(ns.code)")
+    }
+
+    static func isCancellation(_ error: Error) -> Bool {
+        error is CancellationError || (error as? URLError)?.code == .cancelled
+    }
+
+    func message(host: String) -> String {
+        switch self {
+        case .offline: "This iPhone is offline."
+        case .connectionLost: "The connection to \(host) dropped."
+        case .timedOut: "\(host) took too long to answer."
+        case .cannotFindHost: "Can't find \(host) (DNS lookup failed)."
+        case .cannotConnect: "Can't connect to \(host)."
+        case .secureConnection: "The secure connection to \(host) failed."
+        case .network(let code): "Network error \(code) talking to \(host)."
+        case .rateLimited: "\(host) is rate limiting requests."
+        case .server(let status): "\(host) had a server error (HTTP \(status))."
+        case .http(let status): "\(host) refused the request (HTTP \(status))."
+        case .badResponse: "\(host)'s answer couldn't be read as Matrix data."
+        case .hostChanged: "Your homeserver address changed. Close the Dev log and open it again."
+        case .roomMissing: "The Dev log room (\(ForkArtifactConstants.devlogAlias)) wasn't found on your server."
+        case .notJoined: "You're not in the Dev log room."
+        case .sessionExpired: "Your session expired. Reopen TJ Element."
+        case .notSignedIn: "No signed-in session on this iPhone, so the Dev log can't be read."
+        case .unexpected(let detail): "Unexpected error (\(detail))."
+        }
+    }
+
+    /// Whether the poll keeps retrying (with backoff) after this failure.
+    var retries: Bool {
+        switch self {
+        case .sessionExpired, .notSignedIn, .notJoined: false
+        default: true
+        }
+    }
+}
+
+/// 2 → 4 → 8 → 16 → 32 → 60 s after consecutive failures; the 10 s poll after a success.
+nonisolated enum ForkDevLogBackoff {
+    static let pollInterval: TimeInterval = 10
+
+    static func delay(afterFailures failures: Int) -> TimeInterval {
+        guard failures > 0 else { return pollInterval }
+        return min(60, 2 * pow(2, Double(min(failures, 6) - 1)))
+    }
+}
+
+/// The last loaded tickets, per user and room (§13.7). Only ticket + power-level + create events are kept, so the §3.2 trust
+/// rule re-runs on load. Lives under the artifacts cache's per-user folder, so §5.1's sign-out purge removes it too.
+nonisolated struct ForkDevLogCache: Sendable {
+    struct Snapshot: Codable, Equatable {
+        let savedMS: Int
+        let events: [ForkJSON]
+
+        enum CodingKeys: String, CodingKey {
+            case savedMS = "saved_ms"
+            case events
+        }
+    }
+
+    let url: URL
+
+    init(userID: String, roomKey: String, base: URL = ForkArtifactCache.baseDirectory) {
+        url = base.appending(path: ForkArtifactSHA.prefix16(userID), directoryHint: .isDirectory)
+            .appending(path: "devlog-\(ForkArtifactSHA.prefix16(roomKey)).json")
+    }
+
+    static func relevant(_ events: [ForkJSON]) -> [ForkJSON] {
+        events.filter { event in
+            switch event["type"]?.string {
+            case ForkArtifactConstants.ticketStateType, "m.room.power_levels", "m.room.create": true
+            default: false
+            }
+        }
+    }
+
+    func save(_ events: [ForkJSON], now: Date = Date()) {
+        let snapshot = Snapshot(savedMS: Int(now.timeIntervalSince1970 * 1000), events: Self.relevant(events))
+        guard let data = try? JSONEncoder().encode(snapshot) else { return }
+        try? FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try? data.write(to: url, options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication])
+    }
+
+    func load() -> Snapshot? {
+        guard let data = try? Data(contentsOf: url) else { return nil }
+        return try? JSONDecoder().decode(Snapshot.self, from: data)
+    }
+}
+
+// MARK: - Model
 
 @Observable
 final class ForkDevLogModel {
@@ -22,11 +170,34 @@ final class ForkDevLogModel {
     private(set) var phase: Phase = .loading
     private(set) var tickets: [ForkDevLogTicket] = []
     private(set) var isJoining = false
+    /// The current failure; shown above the last tickets (or alone when there are none). nil after a success.
+    private(set) var problem: String?
+    /// When the next automatic retry runs (nil while polling normally or stopped).
+    private(set) var nextRetryAt: Date?
+    /// When the tickets on screen were loaded (from the server, or the cache's save time).
+    private(set) var loadedAt: Date?
+    private(set) var isShowingSaved = false
+    private(set) var isRetrying = false
+    @ObservationIgnored private var failures = 0
+    @ObservationIgnored private var visibleViews = 0
     @ObservationIgnored private var pollTask: Task<Void, Never>?
     @ObservationIgnored private var roomID: String?
+    @ObservationIgnored private var cache: ForkDevLogCache?
+    @ObservationIgnored private var host = "your homeserver"
 
-    init(rest: ForkMatrixREST) {
+    init(rest: ForkMatrixREST, cacheBase: URL = ForkArtifactCache.baseDirectory) {
         self.rest = rest
+        let cache = ForkDevLogCache(userID: rest.userID, roomKey: Self.roomKey, base: cacheBase)
+        self.cache = cache
+        if let snapshot = cache.load() {
+            let saved = ForkDevLogIndex.parse(stateEvents: snapshot.events)
+            if !saved.isEmpty {
+                tickets = saved
+                phase = .loaded
+                isShowingSaved = true
+                loadedAt = Date(timeIntervalSince1970: TimeInterval(snapshot.savedMS) / 1000)
+            }
+        }
     }
 
     var pipeline: [ForkDevLogTicket] {
@@ -41,38 +212,58 @@ final class ForkDevLogModel {
         tickets.first { $0.id == id }
     }
 
+    /// The list and an open receipt both count, so pushing a receipt keeps the poll running.
     func appeared() {
-        guard pollTask == nil else { return }
-        pollTask = Task { [weak self] in
-            while !Task.isCancelled {
-                await self?.refresh()
-                try? await Task.sleep(for: .seconds(10))
-            }
-        }
+        visibleViews += 1
+        startPolling()
     }
 
     func disappeared() {
-        pollTask?.cancel()
-        pollTask = nil
+        visibleViews = max(0, visibleViews - 1)
+        guard visibleViews == 0 else { return }
+        stopPolling()
     }
 
-    func refresh() async {
+    /// The Retry button: fetch now, then carry on polling.
+    func retryNow() {
+        stopPolling()
+        startPolling()
+    }
+
+    /// One fetch. Returns the delay before the next one, or nil when retrying can't help (signed out, expired, not joined).
+    @discardableResult
+    func refresh() async -> TimeInterval? {
+        isRetrying = problem != nil
+        defer { isRetrying = false }
         do {
+            #if DEBUG
+            // Gate harness only (`-TJDevlogFault offline`): fail every fetch as if offline, to show the saved-tickets banner.
+            if UserDefaults.standard.string(forKey: "TJDevlogFault") == "offline" { throw URLError(.notConnectedToInternet) }
+            #endif
             let roomID = try await resolvedRoomID()
             let events = try await rest.state(roomID: roomID)
             tickets = ForkDevLogIndex.parse(stateEvents: events)
+            cache?.save(events)
             phase = .loaded
-        } catch ForkMatrixREST.RESTError.forbidden {
-            phase = .notJoined
-        } catch ForkMatrixREST.RESTError.notFound {
-            phase = .error("The Dev Log room (\(ForkArtifactConstants.devlogAlias)) doesn't exist yet.")
-        } catch ForkMatrixREST.RESTError.sessionExpired {
-            phase = .error("Session expired: reopen TJ Element")
-            disappeared()
-        } catch ForkMatrixREST.RESTError.noSession {
-            phase = .error("Can't reach the Dev log (signed-in session not found)")
+            problem = nil
+            failures = 0
+            isShowingSaved = false
+            loadedAt = Date()
+            return ForkDevLogBackoff.pollInterval
         } catch {
-            if !(error is CancellationError), tickets.isEmpty { phase = .error("Can't reach the Dev log right now") }
+            guard let failure = ForkDevLogProblem.from(error) else { return ForkDevLogBackoff.pollInterval }
+            if let pinned = await rest.currentHost() { host = pinned }
+            failures += 1
+            switch failure {
+            case .notJoined where tickets.isEmpty:
+                phase = .notJoined
+                problem = nil
+            default:
+                let message = failure.message(host: host)
+                problem = message
+                if tickets.isEmpty { phase = .error(message) }
+            }
+            return failure.retries ? ForkDevLogBackoff.delay(afterFailures: failures) : nil
         }
     }
 
@@ -83,8 +274,39 @@ final class ForkDevLogModel {
             roomID = try await rest.join(ForkArtifactConstants.devlogAlias)
             await refresh()
         } catch {
-            phase = .error("Couldn't join: \(ForkArtifactsModel.describe(error))")
+            let failure = ForkDevLogProblem.from(error)
+            phase = .error("Couldn't join: \(failure?.message(host: host) ?? "cancelled")")
         }
+    }
+
+    // MARK: - Private
+
+    private func startPolling() {
+        guard pollTask == nil else { return }
+        pollTask = Task { [weak self] in
+            while !Task.isCancelled {
+                guard let delay = await self?.refresh() else {
+                    self?.nextRetryAt = nil
+                    return
+                }
+                guard let self else { return }
+                nextRetryAt = problem == nil ? nil : Date().addingTimeInterval(delay)
+                try? await Task.sleep(for: .seconds(delay))
+            }
+        }
+    }
+
+    private func stopPolling() {
+        pollTask?.cancel()
+        pollTask = nil
+        nextRetryAt = nil
+    }
+
+    private static var roomKey: String {
+        #if DEBUG
+        if let override = UserDefaults.standard.string(forKey: "TJDevlogRoom"), override.hasPrefix("!") { return override }
+        #endif
+        return ForkArtifactConstants.devlogAlias
     }
 
     private func resolvedRoomID() async throws -> String {
@@ -110,6 +332,9 @@ struct ForkDevLogScreen: View {
 
     var body: some View {
         List {
+            if model.problem != nil || model.isShowingSaved, model.phase == .loaded {
+                Section { ForkDevLogStatusBanner(model: model) }
+            }
             switch model.phase {
             case .loading:
                 HStack { Spacer(); ProgressView(); Spacer() }
@@ -129,8 +354,8 @@ struct ForkDevLogScreen: View {
                     }
                     .padding(.vertical, 6)
                 }
-            case .error(let message):
-                Text(message).foregroundStyle(.secondary)
+            case .error:
+                Section { ForkDevLogStatusBanner(model: model) }
             case .loaded:
                 if model.tickets.isEmpty {
                     Text("No tickets yet.").foregroundStyle(.secondary)
@@ -166,6 +391,51 @@ struct ForkDevLogScreen: View {
         .onAppear { model.appeared() }
         .onDisappear { model.disappeared() }
         .accessibilityIdentifier("tj_devlog-list")
+    }
+}
+
+/// The reason, how old the tickets on screen are, the next automatic retry, and Retry.
+struct ForkDevLogStatusBanner: View {
+    let model: ForkDevLogModel
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            if let problem = model.problem {
+                Label(problem, systemImage: "wifi.exclamationmark")
+                    .font(.footnote.weight(.semibold))
+                    .foregroundStyle(.orange)
+                    .accessibilityIdentifier("tj_devlog-problem")
+            }
+            if !model.tickets.isEmpty, let loadedAt = model.loadedAt, model.problem != nil || model.isShowingSaved {
+                Text("Showing tickets from \(loadedAt.formatted(date: .omitted, time: .shortened)) (\(loadedAt.formatted(.relative(presentation: .named)))).")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .accessibilityIdentifier("tj_devlog-saved")
+            }
+            if model.problem != nil {
+                HStack {
+                    SwiftUI.TimelineView(.periodic(from: .now, by: 1)) { context in
+                        if model.isRetrying {
+                            Text("Retrying…")
+                        } else if let next = model.nextRetryAt {
+                            Text("Retrying in \(max(0, Int(next.timeIntervalSince(context.date).rounded(.up)))) s")
+                        } else {
+                            Text("Not retrying automatically.")
+                        }
+                    }
+                    .font(.caption.monospacedDigit())
+                    .foregroundStyle(.secondary)
+                    Spacer()
+                    Button("Retry") { model.retryNow() }
+                        .buttonStyle(.bordered)
+                        .font(.footnote.weight(.semibold))
+                        .accessibilityIdentifier("tj_devlog-retry")
+                }
+            }
+        }
+        .padding(.vertical, 4)
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("tj_devlog-banner")
     }
 }
 
@@ -295,7 +565,21 @@ enum ForkDevLogFormat {
     }
 
     static func usd(_ value: Double, estimate: Bool) -> String {
-        String(format: "$%.2f", value) + (estimate ? " est." : "")
+        money(value) + (estimate ? " est." : "")
+    }
+
+    /// `$%.2f`, but `$%.4f` for a non-zero amount under one cent, so a small run never reads "$0.00" (§13.7).
+    static func money(_ value: Double) -> String {
+        if value > 0, value < 0.01 { return String(format: "$%.4f", value) }
+        return String(format: "$%.2f", value)
+    }
+
+    /// "Provisional until …" while `provisional_until` (ms) is still in the future; nil once it has passed.
+    static func provisionalLine(_ ms: Int?, now: Date = Date()) -> String? {
+        guard let ms else { return nil }
+        let until = Date(timeIntervalSince1970: TimeInterval(ms) / 1000)
+        guard until > now else { return nil }
+        return "Provisional until \(until.formatted(date: .abbreviated, time: .shortened))"
     }
 
     static func tokens(_ value: Int?) -> String {
@@ -331,6 +615,8 @@ struct ForkDevLogReceipt: View {
             }
             .navigationTitle("Receipt")
             .navigationBarTitleDisplayMode(.inline)
+            .onAppear { model.appeared() }
+            .onDisappear { model.disappeared() }
             .accessibilityIdentifier("tj_devlog-receipt")
         } else {
             ForkArtifactMessage(symbol: "doc.questionmark", title: "Ticket not found", detail: ticketID)
@@ -488,7 +774,7 @@ struct ForkDevLogReceipt: View {
                                 Text(item.status ?? "").font(.caption)
                                 Text(item.feature ?? "").font(.caption.monospaced())
                                 Text([item.note, item.validation].compactMap { $0 }.joined(separator: " · ")).font(.caption)
-                                Text(item.costUSD.map { String(format: "$%.2f", $0) } ?? "").font(.caption.monospacedDigit())
+                                Text(item.costUSD.map(ForkDevLogFormat.money) ?? "").font(.caption.monospacedDigit())
                             }
                         }
                     }
@@ -500,7 +786,7 @@ struct ForkDevLogReceipt: View {
                                 Spacer()
                                 if let type = item.type { Text(type).font(.caption2.weight(.semibold)).padding(.horizontal, 6).padding(.vertical, 2).background(.quaternary, in: Capsule()) }
                             }
-                            Text([item.status, item.feature, item.costUSD.map { String(format: "$%.2f", $0) }].compactMap { $0 }.joined(separator: " · "))
+                            Text([item.status, item.feature, item.costUSD.map(ForkDevLogFormat.money)].compactMap { $0 }.joined(separator: " · "))
                                 .font(.caption).foregroundStyle(.secondary)
                             if let note = item.note { Text(note).font(.caption) }
                             if let validation = item.validation { Text(validation).font(.caption).foregroundStyle(.secondary) }
@@ -566,6 +852,21 @@ struct ForkDevLogReceipt: View {
                     Text(ForkDevLogFormat.usd(total, estimate: cost.totalIsEstimate == true)).font(.title2.bold().monospacedDigit())
                 }
                 if let basis = cost.basis { Text(basis).font(.caption).foregroundStyle(.secondary) }
+                if let apiRate = cost.apiRateUSD {
+                    Text("API-rate equivalent \(ForkDevLogFormat.money(apiRate))")
+                        .font(.footnote.monospacedDigit())
+                        .accessibilityIdentifier("tj_devlog-cost-api-rate")
+                }
+                if let note = cost.note, !note.isEmpty {
+                    Text(note).font(.caption).foregroundStyle(.secondary)
+                        .accessibilityIdentifier("tj_devlog-cost-note")
+                }
+                if let provisional = ForkDevLogFormat.provisionalLine(cost.provisionalUntil) {
+                    Label(provisional, systemImage: "hourglass")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.orange)
+                        .accessibilityIdentifier("tj_devlog-cost-provisional")
+                }
                 if let tokens = cost.tokens {
                     Text("Tokens · input \(ForkDevLogFormat.tokens(tokens.input)) · output \(ForkDevLogFormat.tokens(tokens.output)) · cache read \(ForkDevLogFormat.tokens(tokens.cacheRead)) · cache write \(ForkDevLogFormat.tokens(tokens.cacheWrite))")
                         .font(.caption.monospacedDigit())
@@ -584,7 +885,8 @@ struct ForkDevLogReceipt: View {
                               "in \(ForkDevLogFormat.tokens(run.input))",
                               "out \(ForkDevLogFormat.tokens(run.output))",
                               "cache \(ForkDevLogFormat.tokens(run.cacheRead))/\(ForkDevLogFormat.tokens(run.cacheWrite))",
-                              run.costUSD.map { String(format: "$%.2f", $0) },
+                              run.costUSD.map(ForkDevLogFormat.money),
+                              run.apiRateUSD.map { "API \(ForkDevLogFormat.money($0))" },
                               run.durationMS.map { "\($0 / 1000) s" }].compactMap { $0 }.joined(separator: " · "))
                             .font(.caption.monospacedDigit()).foregroundStyle(.secondary)
                     }

@@ -29,6 +29,8 @@ final class ForkArtifactOverlayWindow: UIWindow {
 /// (a UIViewRepresentable) never received the touch on iOS 27.1 (G-A2 run 1), because UIKit routes it to the web view.
 final class ForkArtifactFullScreenHost: UIHostingController<ForkArtifactFullScreenView>, UIGestureRecognizerDelegate {
     var onExit: (() -> Void)?
+    /// Home Screen app mode (§13.2): the control reads "← Thread" and opens the room instead of leaving full screen.
+    var isThreadMode = false
     private let exitButton = UIButton(type: .system)
     private var fadeTask: Task<Void, Never>?
 
@@ -43,23 +45,29 @@ final class ForkArtifactFullScreenHost: UIHostingController<ForkArtifactFullScre
 
         // White on a dark disc: readable over any artifact (games are often dark, diagrams light).
         var configuration = UIButton.Configuration.plain()
-        configuration.image = UIImage(systemName: "arrow.down.right.and.arrow.up.left",
-                                      withConfiguration: UIImage.SymbolConfiguration(pointSize: 17, weight: .semibold))
+        let symbol = isThreadMode ? "chevron.left" : "arrow.down.right.and.arrow.up.left"
+        configuration.image = UIImage(systemName: symbol, withConfiguration: UIImage.SymbolConfiguration(pointSize: isThreadMode ? 15 : 17, weight: .semibold))
+        if isThreadMode {
+            configuration.title = "Thread"
+            configuration.imagePadding = 4
+            configuration.contentInsets = NSDirectionalEdgeInsets(top: 0, leading: 12, bottom: 0, trailing: 14)
+        }
         configuration.baseForegroundColor = .white
         configuration.background.backgroundColor = UIColor.black.withAlphaComponent(0.55)
         configuration.background.strokeColor = UIColor.white.withAlphaComponent(0.35)
         configuration.background.strokeWidth = 1
         configuration.background.cornerRadius = 22
         exitButton.configuration = configuration
-        exitButton.accessibilityLabel = "Exit full screen"
-        exitButton.accessibilityIdentifier = "tj_artifacts-exit-fullscreen"
+        exitButton.accessibilityLabel = isThreadMode ? "Back to the thread" : "Exit full screen"
+        exitButton.accessibilityIdentifier = isThreadMode ? "tj_homeapp-thread" : "tj_artifacts-exit-fullscreen"
         exitButton.addAction(UIAction { [weak self] _ in self?.onExit?() }, for: .primaryActionTriggered)
         exitButton.translatesAutoresizingMaskIntoConstraints = false
         view.addSubview(exitButton)
-        NSLayoutConstraint.activate([exitButton.leadingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.leadingAnchor, constant: 10),
-                                     exitButton.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor, constant: 6),
-                                     exitButton.widthAnchor.constraint(equalToConstant: 44),
-                                     exitButton.heightAnchor.constraint(equalToConstant: 44)])
+        var constraints = [exitButton.leadingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.leadingAnchor, constant: 10),
+                           exitButton.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor, constant: 6),
+                           exitButton.heightAnchor.constraint(equalToConstant: 44)]
+        constraints.append(isThreadMode ? exitButton.widthAnchor.constraint(greaterThanOrEqualToConstant: 44) : exitButton.widthAnchor.constraint(equalToConstant: 44))
+        NSLayoutConstraint.activate(constraints)
         view.accessibilityElements = nil
 
         // Any touch wakes the button (fades to 30% after 3 s; never hidden).
@@ -92,9 +100,17 @@ final class ForkArtifactFullScreenHost: UIHostingController<ForkArtifactFullScre
 
 struct ForkArtifactFullScreenView: View {
     let model: ForkArtifactsModel
+    /// Home Screen app mode (§13.2): only this artifact, never the "first artifact" fallback.
+    var app: ForkArtifactAppTarget?
 
     var body: some View {
-        ForkArtifactCanvas(model: model, isFullScreenHost: true)
+        Group {
+            if let app {
+                ForkArtifactAppContent(model: model, target: app)
+            } else {
+                ForkArtifactCanvas(model: model, isFullScreenHost: true)
+            }
+        }
             .ignoresSafeArea()
             .statusBarHidden(true)
             .persistentSystemOverlays(.hidden)
@@ -112,22 +128,34 @@ final class ForkArtifactOverlayController {
     private var backgroundedAt: Date?
     private var sceneCheck: Task<Void, Never>?
     private var onGracefulExit: (() -> Void)?
+    private var exitsAfterBackground = true
 
     var isPresented: Bool {
         window != nil
     }
 
-    func present(model: ForkArtifactsModel, on scene: UIWindowScene, exit: @escaping () -> Void) {
+    /// `app` set = Home Screen app mode (§13.2): "← Thread" control, no 30 s background exit.
+    func present(model: ForkArtifactsModel, on scene: UIWindowScene, app: ForkArtifactAppTarget? = nil, exit: @escaping () -> Void) {
         guard window == nil else { return }
         previousKeyWindow = scene.windows.first { $0.isKeyWindow }
         let overlay = ForkArtifactOverlayWindow(windowScene: scene)
-        let host = ForkArtifactFullScreenHost(rootView: ForkArtifactFullScreenView(model: model))
+        let host = ForkArtifactFullScreenHost(rootView: ForkArtifactFullScreenView(model: model, app: app))
+        host.isThreadMode = app != nil
         host.onExit = exit
         overlay.rootViewController = host
         overlay.makeKeyAndVisible()
         window = overlay
         onGracefulExit = exit
+        exitsAfterBackground = app == nil
         observe(scene: scene)
+    }
+
+    /// Re-targets an app-mode overlay that is already up (a second Home Screen tap).
+    func update(model: ForkArtifactsModel, app: ForkArtifactAppTarget, exit: @escaping () -> Void) {
+        guard let host = window?.rootViewController as? ForkArtifactFullScreenHost else { return }
+        host.rootView = ForkArtifactFullScreenView(model: model, app: app)
+        host.onExit = exit
+        onGracefulExit = exit
     }
 
     func dismiss() {
@@ -164,6 +192,7 @@ final class ForkArtifactOverlayController {
     }
 
     private func didEnterBackground() {
+        guard exitsAfterBackground else { return }
         backgroundedAt = Date()
         backgroundTask?.cancel()
         backgroundTask = Task { [weak self] in

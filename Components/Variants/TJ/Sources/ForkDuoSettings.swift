@@ -111,7 +111,7 @@ private struct ForkDuoRowsView: View {
         if let userID {
             // Pushed inside Settings' own stack; no "Jump to message" here (no room flow).
             NavigationLink {
-                ForkDevLogScreen(model: ForkDevLogModel(rest: ForkMatrixREST(userID: userID)), jumpToMessage: nil)
+                ForkDevLogSettingsDestination(userID: userID)
             } label: {
                 Text("Dev log")
                 Text("Workshop tickets and receipts (TJ Dev Log room).")
@@ -157,6 +157,26 @@ private struct ForkDuoRowsView: View {
             ForkDuoBackScreenCardPreviewSheet()
         }
         #endif
+    }
+}
+
+/// Keeps ONE Dev log model for the pushed screen (build 3 built a new model, and a new REST client, on every re-render of the
+/// Settings list, so the screen could show a model that never started polling). Shares the user's REST client.
+private struct ForkDevLogSettingsDestination: View {
+    let userID: String
+    @State private var model: ForkDevLogModel?
+
+    var body: some View {
+        Group {
+            if let model {
+                ForkDevLogScreen(model: model, jumpToMessage: nil)
+            } else {
+                ProgressView()
+            }
+        }
+        .onAppear {
+            if model == nil { model = ForkDevLogModel(rest: ForkArtifactsStore.shared.rest(forUser: userID)) }
+        }
     }
 }
 

@@ -62,7 +62,7 @@ targets:
 # driven by the variables above (ShareExtension/SupportingFiles/target.yml:65-71).
 
 # ---------------------------------------------------------------------------------------------
-# Upstream source edits so far: 2 of 3 (cap): 1 test fixture + 1 product hook (build 3, see item 2 below).
+# Upstream source edits so far: 3 of 3 (CAP REACHED): 1 test fixture + 2 product hooks (build 3 item 2, build 4 item 3).
 #
 # REMOVED (Duo v2, Xcode 27.1 / Swift 6.4): G5 `@_optimize(none)` on TimelineViewModel.init. It worked around an
 # Xcode 26.6 / Swift 6.3.3 Release -O swift-frontend crash ("Invalid SIL provided to OSSACompleteLifetime?!",
@@ -88,4 +88,9 @@ targets:
 #    1 site): the presented RoomScreenCoordinator is wrapped in `ForkRoomChrome.wrap(...)` (Artifacts zone, New chat, Dev log;
 #    WatchLab/Element/03_ARTIFACTS_SPEC.md rev 3 D2). Under unit tests `wrap` returns the inner coordinator unchanged, so
 #    upstream's `rootCoordinator is RoomScreenCoordinator` assertions hold with zero test edits.
+#
+# 3. ElementX/Sources/Application/Application.swift openURL(_:isExternalURL:) (1 inserted line, build 4): every opened URL goes
+#    to `ForkDeepLinkRouter.shared.handle(url, openRoute:)` first; it returns false for anything that isn't the Home Screen app
+#    link `<scheme>://artifact?room=…&a=…` (03_ARTIFACTS_SPEC.md rev 3.4 §13.1), so upstream routing is unchanged for every
+#    other URL. Needed because upstream has no URL hook and sends an unknown own-scheme URL to openURLInSystemBrowser (a loop).
 # ---------------------------------------------------------------------------------------------

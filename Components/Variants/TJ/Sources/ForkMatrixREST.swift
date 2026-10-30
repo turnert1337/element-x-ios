@@ -74,6 +74,11 @@ actor ForkMatrixREST {
         return Set(keychain.restorationTokens().map(\.userID))
     }
 
+    /// The homeserver host this client is pinned to (nil before the first credentials read). For messages only.
+    func currentHost() -> String? {
+        pinnedHost
+    }
+
     // MARK: - API
 
     func state(roomID: String) async throws -> [ForkJSON] {
@@ -112,6 +117,10 @@ actor ForkMatrixREST {
 
     // MARK: - Transport
 
+    static func isRetryableTransport(_ error: URLError) -> Bool {
+        [.networkConnectionLost, .cannotConnectToHost, .secureConnectionFailed].contains(error.code)
+    }
+
     static func segment(_ value: String) -> String {
         var allowed = CharacterSet.alphanumerics
         allowed.insert(charactersIn: "-._~")
@@ -131,10 +140,20 @@ actor ForkMatrixREST {
         var credentials = try credentials()
         var retried401 = false
         var attempts429 = 0
+        var retriedTransport = false
 
         while true {
             let request = try makeRequest(method, path: path, body: body, credentials: credentials, timeout: timeout)
-            let (data, response) = try await session.data(for: request)
+            let data: Data
+            let response: URLResponse
+            do {
+                (data, response) = try await session.data(for: request)
+            } catch let error as URLError where method == "GET" && !retriedTransport && Self.isRetryableTransport(error) {
+                // A pooled connection the network silently dropped fails the first request after idle or a resume from
+                // the background (-1005); one immediate retry on a fresh connection is what the user would do.
+                retriedTransport = true
+                continue
+            }
             guard let http = response as? HTTPURLResponse else { throw RESTError.badResponse }
             switch http.statusCode {
             case 200..<300:

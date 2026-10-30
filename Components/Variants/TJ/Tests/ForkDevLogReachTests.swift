@@ -1,0 +1,289 @@
+//
+// TJ fork: Dev log reach (R3) + cost display (R2) tests (iOS Workshop, Element card).
+// Based on Element X iOS. SPDX-License-Identifier: AGPL-3.0-only
+//
+// Spec: WatchLab/Element/03_ARTIFACTS_SPEC.md rev 3.4, §13.7; §3.4 rev 3.3 cost fields.
+//
+
+@testable import ElementX
+import Foundation
+import Synchronization
+import Testing
+
+struct ForkDevLogReachTests {
+    static let oldGeneric = "Can't reach the Dev log right now"
+
+    // MARK: - Error mapping: every cause has its own message
+
+    @Test
+    func cancellationIsNotAFailure() {
+        #expect(ForkDevLogProblem.from(CancellationError()) == nil)
+        #expect(ForkDevLogProblem.from(URLError(.cancelled)) == nil)
+        #expect(ForkDevLogProblem.isCancellation(URLError(.cancelled)))
+    }
+
+    @Test
+    func everyErrorMapsToItsOwnProblem() {
+        let table: [(any Error, ForkDevLogProblem)] = [
+            (ForkMatrixREST.RESTError.noSession, .notSignedIn),
+            (ForkMatrixREST.RESTError.hostMismatch, .hostChanged),
+            (ForkMatrixREST.RESTError.sessionExpired, .sessionExpired),
+            (ForkMatrixREST.RESTError.forbidden, .notJoined),
+            (ForkMatrixREST.RESTError.notFound, .roomMissing),
+            (ForkMatrixREST.RESTError.http(429), .rateLimited),
+            (ForkMatrixREST.RESTError.http(502), .server(status: 502)),
+            (ForkMatrixREST.RESTError.http(418), .http(status: 418)),
+            (ForkMatrixREST.RESTError.badResponse, .badResponse),
+            (URLError(.notConnectedToInternet), .offline),
+            (URLError(.dataNotAllowed), .offline),
+            (URLError(.networkConnectionLost), .connectionLost),
+            (URLError(.timedOut), .timedOut),
+            (URLError(.cannotFindHost), .cannotFindHost),
+            (URLError(.dnsLookupFailed), .cannotFindHost),
+            (URLError(.cannotConnectToHost), .cannotConnect),
+            (URLError(.secureConnectionFailed), .secureConnection),
+            (URLError(.serverCertificateUntrusted), .secureConnection),
+            (URLError(.badServerResponse), .badResponse),
+            (URLError(.resourceUnavailable), .network(code: URLError.Code.resourceUnavailable.rawValue)),
+            (CocoaError(.fileReadCorruptFile), .unexpected("NSCocoaErrorDomain \(CocoaError.Code.fileReadCorruptFile.rawValue)"))
+        ]
+        for (error, expected) in table {
+            #expect(ForkDevLogProblem.from(error) == expected, "\(error)")
+        }
+    }
+
+    @Test
+    func messagesAreDistinctNamedAndNeverTheOldGenericOne() {
+        let problems: [ForkDevLogProblem] = [.offline, .connectionLost, .timedOut, .cannotFindHost, .cannotConnect, .secureConnection,
+                                             .network(code: -1008), .rateLimited, .server(status: 502), .http(status: 418), .badResponse,
+                                             .hostChanged, .roomMissing, .notJoined, .sessionExpired, .notSignedIn, .unexpected("X 1")]
+        let messages = problems.map { $0.message(host: "matrix.autopute.ai") }
+        #expect(Set(messages).count == messages.count)
+        #expect(!messages.contains { $0.localizedCaseInsensitiveContains(Self.oldGeneric) })
+        for problem in [ForkDevLogProblem.connectionLost, .timedOut, .cannotFindHost, .cannotConnect, .server(status: 503)] {
+            #expect(problem.message(host: "matrix.autopute.ai").contains("matrix.autopute.ai"))
+        }
+        #expect(ForkDevLogProblem.server(status: 502).message(host: "h").contains("502"))
+    }
+
+    @Test
+    func onlyHopelessFailuresStopRetrying() {
+        #expect(!ForkDevLogProblem.sessionExpired.retries)
+        #expect(!ForkDevLogProblem.notSignedIn.retries)
+        #expect(!ForkDevLogProblem.notJoined.retries)
+        #expect(ForkDevLogProblem.connectionLost.retries)
+        #expect(ForkDevLogProblem.badResponse.retries)
+        #expect(ForkDevLogProblem.server(status: 500).retries)
+    }
+
+    @Test
+    func backoffDoublesFromTwoToSixtySeconds() {
+        #expect((1...8).map { ForkDevLogBackoff.delay(afterFailures: $0) } == [2, 4, 8, 16, 32, 60, 60, 60])
+        #expect(ForkDevLogBackoff.delay(afterFailures: 0) == 10)
+    }
+
+    // MARK: - Transport, through the real REST client and a scripted server
+
+    @Test
+    func htmlInsteadOfJSONIsABadResponseNotAGenericError() async {
+        ForkScriptedServer.reset([.respond(200, "<html>autopute</html>")])
+        let rest = Self.rest()
+        await #expect(throws: ForkMatrixREST.RESTError.badResponse) { _ = try await rest.state(roomID: "!r") }
+    }
+
+    @Test
+    func aDroppedConnectionIsRetriedOnceForAGet() async throws {
+        ForkScriptedServer.reset([.fail(.networkConnectionLost), .respond(200, "[]")])
+        let events = try await Self.rest().state(roomID: "!r")
+        #expect(events.isEmpty)
+        #expect(ForkScriptedServer.requestCount() == 2)
+    }
+
+    @Test
+    func twoDroppedConnectionsSurfaceAsConnectionLost() async {
+        ForkScriptedServer.reset([.fail(.networkConnectionLost), .fail(.networkConnectionLost)])
+        do {
+            _ = try await Self.rest().state(roomID: "!r")
+            Issue.record("expected a failure")
+        } catch {
+            #expect(ForkDevLogProblem.from(error) == .connectionLost)
+        }
+    }
+
+    // MARK: - Model: cached tickets stay on screen while it retries
+
+    @Test
+    func failureWithoutCacheShowsTheSpecificReason() async throws {
+        let base = Self.tempBase()
+        ForkScriptedServer.reset([.respond(502, "{}"), .respond(502, "{}")])
+        let model = ForkDevLogModel(rest: Self.rest(), cacheBase: base)
+        let delay = await model.refresh()
+        #expect(delay == 2)
+        #expect(model.phase == .error("matrix.example.org had a server error (HTTP 502)."))
+        #expect(model.problem == "matrix.example.org had a server error (HTTP 502).")
+        #expect(await model.refresh() == 4)
+    }
+
+    @Test
+    func cachedTicketsStayWhileTheServerIsDown() async throws {
+        let base = Self.tempBase()
+        // 1. A good fetch fills the cache.
+        ForkScriptedServer.reset([.respond(200, "{\"room_id\":\"!dev\"}"), .respond(200, Self.stateJSON)])
+        let first = ForkDevLogModel(rest: Self.rest(), cacheBase: base)
+        #expect(await first.refresh() == 10)
+        #expect(first.tickets.map(\.id) == ["T-1"])
+
+        // 2. A new screen (fresh model) while the server is down: the saved tickets show with the reason and a retry time.
+        ForkScriptedServer.reset([.respond(200, "{\"room_id\":\"!dev\"}"), .fail(.notConnectedToInternet)])
+        let second = ForkDevLogModel(rest: Self.rest(), cacheBase: base)
+        #expect(second.isShowingSaved)
+        #expect(second.tickets.map(\.id) == ["T-1"])
+        #expect(second.phase == .loaded)
+        #expect(await second.refresh() == 2)
+        #expect(second.phase == .loaded)
+        #expect(second.tickets.map(\.id) == ["T-1"])
+        #expect(second.problem == "This iPhone is offline.")
+    }
+
+    @Test
+    func signedOutStopsRetryingWithItsOwnMessage() async {
+        let rest = ForkMatrixREST(userID: "@nobody:example.org") { _ in nil }
+        let model = ForkDevLogModel(rest: rest, cacheBase: Self.tempBase())
+        #expect(await model.refresh() == nil)
+        #expect(model.problem == ForkDevLogProblem.notSignedIn.message(host: "your homeserver"))
+    }
+
+    @Test
+    func cacheKeepsOnlyTrustRelevantEventsAndReRunsTheTrustRule() throws {
+        let cache = ForkDevLogCache(userID: "@u:x", roomKey: "#tj-devlog:x", base: Self.tempBase())
+        let untrusted = ForkJSON.object(["type": .string(ForkArtifactConstants.ticketStateType), "state_key": .string("T-2"),
+                                         "sender": .string("@stranger:x"), "content": Self.ticketContent(id: "T-2")])
+        let member = ForkJSON.object(["type": .string("m.room.member"), "state_key": .string("@u:x"), "sender": .string("@u:x"),
+                                      "content": .object(["membership": .string("join")])])
+        let events = try #require(try ForkJSON.decode(Data(Self.stateJSON.utf8)).array) + [untrusted, member]
+        cache.save(events, now: Date(timeIntervalSince1970: 1_793_300_000))
+        let snapshot = try #require(cache.load())
+        #expect(snapshot.savedMS == 1_793_300_000_000)
+        #expect(!snapshot.events.contains { $0["type"]?.string == "m.room.member" })
+        #expect(ForkDevLogIndex.parse(stateEvents: snapshot.events).map(\.id) == ["T-1"])
+    }
+
+    // MARK: - R2: rev 3.3 cost fields, from the real build-3 ticket
+
+    nonisolated static let realTicketPath = "/Users/turnertomlinson/CommandCenter/WatchLab/WatchLab/Element/artifacts/tickets/T-20261029-0623-artifacts.json"
+
+    /// Read from the workshop checkout (not copied into the public fork: it holds the operator's verbatim request).
+    @Test(.enabled(if: FileManager.default.fileExists(atPath: realTicketPath), "needs the workshop checkout"))
+    func realTicketDecodesTheProratedAndAPIRateCosts() throws {
+        let content = try ForkJSON.decode(Data(contentsOf: URL(fileURLWithPath: Self.realTicketPath)))
+        let ticket = try #require(ForkDevLogTicket.parse(content: content))
+        let cost = try #require(ticket.cost)
+        #expect(cost.totalUSD == 1.94785)
+        #expect(cost.apiRateUSD == 156.725005)
+        #expect(cost.note?.hasPrefix("Only Claude Code usage on the dev Mac is visible") == true)
+        #expect(cost.provisionalUntil == 1_793_336_400_000)
+        let runs = try #require(cost.runs)
+        #expect(runs.count == 10)
+        #expect(runs.compactMap(\.apiRateUSD).count == runs.count)
+        let microsTotal = runs.compactMap(\.costUSD).reduce(0, +)
+        #expect(abs(microsTotal - 1.94785) < 0.000_001)
+        let smallest = try #require(runs.compactMap(\.costUSD).min())
+        #expect(smallest < 0.01)
+        #expect(ForkDevLogFormat.money(smallest) != "$0.00")
+        #expect(ForkDevLogFormat.money(smallest).hasPrefix("$0.00"))
+    }
+
+    @Test
+    func moneyNeverRoundsASmallRunToZero() {
+        #expect(ForkDevLogFormat.money(0.000836) == "$0.0008")
+        #expect(ForkDevLogFormat.money(0.00179) == "$0.0018")
+        #expect(ForkDevLogFormat.money(0.0099) == "$0.0099")
+        #expect(ForkDevLogFormat.money(0.01) == "$0.01")
+        #expect(ForkDevLogFormat.money(1.94785) == "$1.95")
+        #expect(ForkDevLogFormat.money(0) == "$0.00")
+        #expect(ForkDevLogFormat.usd(1.94785, estimate: true) == "$1.95 est.")
+    }
+
+    @Test
+    func provisionalLineShowsOnlyWhileInTheFuture() {
+        let now = Date(timeIntervalSince1970: 1_793_300_000)
+        #expect(ForkDevLogFormat.provisionalLine(1_793_336_400_000, now: now)?.hasPrefix("Provisional until ") == true)
+        #expect(ForkDevLogFormat.provisionalLine(1_793_200_000_000, now: now) == nil)
+        #expect(ForkDevLogFormat.provisionalLine(nil, now: now) == nil)
+    }
+
+    @Test
+    func olderTicketsWithoutTheNewFieldsStillDecode() throws {
+        let ticket = try #require(ForkDevLogTicket.parse(content: Self.ticketContent(id: "T-9")))
+        #expect(ticket.cost?.apiRateUSD == nil)
+        #expect(ticket.cost?.note == nil)
+        #expect(ticket.cost?.provisionalUntil == nil)
+        #expect(ticket.cost?.runs?.first?.apiRateUSD == nil)
+    }
+
+    // MARK: - Helpers
+
+    static func rest() -> ForkMatrixREST {
+        ForkMatrixREST(userID: "@tjtest:example.org",
+                       credentialsProvider: { _ in ForkSessionCredentials(accessToken: "stub-token", homeserverURL: URL(string: "https://matrix.example.org")!) },
+                       protocolClasses: [ForkScriptedServer.self])
+    }
+
+    static func tempBase() -> URL {
+        FileManager.default.temporaryDirectory.appending(path: "TJDevLogTests-\(UUID().uuidString)", directoryHint: .isDirectory)
+    }
+
+    static func ticketContent(id: String) -> ForkJSON {
+        .object(["v": .number(1), "id": .string(id), "title": .string("Ticket \(id)"), "stage": .string("building"), "updated_ts": .number(1),
+                 "cost": .object(["total_usd_micros": .number(4_210_000),
+                                  "runs": .array([.object(["kind": .string("steward"), "cost_usd_micros": .number(4_210_000)])])])])
+    }
+
+    static var stateJSON: String {
+        let create = #"{"type":"m.room.create","state_key":"","sender":"@tjtest:example.org","content":{"room_version":"12"}}"#
+        let levels = #"{"type":"m.room.power_levels","state_key":"","sender":"@tjtest:example.org","content":{"events":{"ai.autopute.devlog.ticket":50},"users":{"@turner:example.org":100}}}"#
+        let ticket = #"{"type":"ai.autopute.devlog.ticket","state_key":"T-1","sender":"@tjtest:example.org","content":{"v":1,"id":"T-1","title":"One","stage":"building"}}"#
+        return "[\(create),\(levels),\(ticket)]"
+    }
+}
+
+/// A scripted homeserver: each request takes the next step (a status + body, or a transport error); the last step repeats.
+nonisolated final class ForkScriptedServer: URLProtocol {
+    enum Step: Sendable {
+        case respond(Int, String)
+        case fail(URLError.Code)
+    }
+
+    private static let state = Mutex((steps: [Step](), count: 0))
+
+    static func reset(_ steps: [Step]) {
+        state.withLock { $0 = (steps: steps, count: 0) }
+    }
+
+    static func requestCount() -> Int {
+        state.withLock { $0.count }
+    }
+
+    override static func canInit(with request: URLRequest) -> Bool { true }
+    override static func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+
+    override func startLoading() {
+        guard let url = request.url else { return }
+        let step = Self.state.withLock { state -> Step in
+            let index = min(state.count, max(state.steps.count - 1, 0))
+            state.count += 1
+            return state.steps.isEmpty ? .respond(200, "[]") : state.steps[index]
+        }
+        switch step {
+        case .fail(let code):
+            client?.urlProtocol(self, didFailWithError: URLError(code))
+        case .respond(let status, let body):
+            let response = HTTPURLResponse(url: url, statusCode: status, httpVersion: "HTTP/1.1", headerFields: ["Content-Type": "application/json"])!
+            client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+            client?.urlProtocol(self, didLoad: Data(body.utf8))
+            client?.urlProtocolDidFinishLoading(self)
+        }
+    }
+
+    override func stopLoading() { }
+}

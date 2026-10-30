@@ -116,6 +116,7 @@ struct Application: App {
     // MARK: - Private
     
     private func openURL(_ url: URL, isExternalURL: Bool) {
+        if ForkDeepLinkRouter.shared.handle(url, openRoute: { [appCoordinator] in appCoordinator?.handleAppRoute($0, windowType: nil) }) { return } // TJ fork: Home Screen apps
         if !appCoordinator.handleDeepLink(url, isExternalURL: isExternalURL, windowType: nil) {
             openURLInSystemBrowser(url)
         }

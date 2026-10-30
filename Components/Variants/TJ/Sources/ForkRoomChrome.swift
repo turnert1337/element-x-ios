@@ -224,7 +224,17 @@ final class ForkRoomChromeCoordinator: CoordinatorProtocol {
         ForkArtifactsActions(backToChat: { [weak self] in self?.closeArtifacts() },
                              newArtifact: { [weak self] in self?.presentNewArtifact() },
                              requestChange: { [weak self] entry in self?.presentChange(for: entry) },
-                             enterFullScreen: { [weak self] in self?.enterFullScreen() })
+                             enterFullScreen: { [weak self] in self?.enterFullScreen() },
+                             addToHomeScreen: { [weak self] entry in self?.presentAddToHomeScreen(entry) })
+    }
+
+    /// §13.3: the icon maker + install paths, as a sheet on the split (like New artifact).
+    func presentAddToHomeScreen(_ entry: ForkArtifactEntry) {
+        guard let stack, let link = ForkArtifactDeepLink(roomID: model.roomID, aid: entry.aid) else { return }
+        if model.isFullScreen { exitFullScreen() }
+        let draft = ForkHomeScreenDraft(link: link, entry: entry)
+        let sheet = ForkHomeScreenSheet(draft: draft) { [weak self] in self?.stack?.setSheetCoordinator(nil) }
+        stack.setSheetCoordinator(ForkHostingCoordinator(sheet))
     }
 
     func toggleArtifacts() {
@@ -351,6 +361,7 @@ struct ForkRoomChromeView: View {
 
     @Environment(\.tabViewHorizontalSizeClass) private var tabSizeClass
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
+    @Environment(\.colorScheme) private var colorScheme
 
     private var sizeClass: UserInterfaceSizeClass? {
         tabSizeClass ?? horizontalSizeClass
@@ -377,7 +388,7 @@ struct ForkRoomChromeView: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { state.detailWidth = $0 }
-        .toolbar { ForkRoomToolbar(coordinator: coordinator, model: model, collapseDevLog: collapseDevLog).content }
+        .toolbar { ForkRoomToolbar(coordinator: coordinator, model: model, collapseDevLog: collapseDevLog, hasVerticalBar: state.hasVerticalBar, colorScheme: colorScheme).content }
         .background {
             ForkWindowMetricsReader { size, scene in coordinator.windowChanged(size: size, scene: scene) }
                 .frame(width: 0, height: 0)
@@ -429,6 +440,17 @@ struct ForkRoomToolbar {
     let coordinator: ForkRoomChromeCoordinator
     let model: ForkArtifactsModel
     let collapseDevLog: Bool
+    /// iOS 27.1 vertical bar (closed Duo): there the overlay badge draws and the system `.badge` does not (G-H6).
+    let hasVerticalBar: Bool
+    var colorScheme: ColorScheme = .light
+
+    private var usesSystemBadge: Bool {
+        ForkRailBadge.usesSystemBadge && !hasVerticalBar
+    }
+
+    private var symbolColor: UIColor {
+        UIColor.label.resolvedColor(with: UITraitCollection(userInterfaceStyle: colorScheme == .dark ? .dark : .light))
+    }
 
     @ToolbarContentBuilder
     var content: some ToolbarContent {
@@ -455,16 +477,24 @@ struct ForkRoomToolbar {
     private var artifactsButton: some View {
         let open = model.isOpen && model.layoutMode == .split
         let count = model.hasFetchedOnce ? model.entries.count : 0
+        let badge = model.timerDoneBadge ? "!" : (count > 0 ? "\(count)" : nil)
         return Button {
             coordinator.toggleArtifacts()
         } label: {
             Label {
                 Text(open ? "Close artifacts" : "Artifacts")
             } icon: {
-                Image(systemName: open ? "square.stack.3d.up.fill" : "square.stack.3d.up")
-                    .overlay(alignment: .topTrailing) { ForkRailBadge(text: model.timerDoneBadge ? "!" : (count > 0 ? "\(count)" : nil)) }
+                if usesSystemBadge || badge == nil {
+                    Image(systemName: open ? "square.stack.3d.up.fill" : "square.stack.3d.up")
+                } else {
+                    // Vertical bar (and before iOS 26): the count is drawn into the icon image itself; the bar draws neither
+                    // an overlay nor `.badge` there (G-H6 run 1, closed Duo 27.1).
+                    Image(uiImage: ForkBadgedSymbol.image(symbol: open ? "square.stack.3d.up.fill" : "square.stack.3d.up",
+                                                          badge: badge ?? "", color: open ? .tintColor : symbolColor))
+                }
             }
         }
+        .modifier(ForkToolbarBadge(text: badge, enabled: usesSystemBadge))
         .tint(open ? .accentColor : nil)
         .accessibilityValue(model.timerDoneBadge ? "Timer done" : (count > 0 ? "\(count) artifacts" : ""))
         .accessibilityIdentifier("tj_room-artifacts")
@@ -503,8 +533,29 @@ struct ForkRoomToolbar {
     }
 }
 
-/// The small count (or "Timer done" "!") badge on the room's Artifacts item.
+/// R4 (build 4): iOS 26+ horizontal toolbars draw a toolbar item's label as a bare symbol image and drop overlays, so the
+/// count/"!" never showed under the iOS 27 horizontal bar (iPhone portrait). There the system badge (`.badge`) is used; the
+/// 27.1 vertical bar is the reverse (overlay draws, `.badge` doesn't), so it keeps the overlay.
+struct ForkToolbarBadge: ViewModifier {
+    let text: String?
+    let enabled: Bool
+
+    func body(content: Content) -> some View {
+        if enabled {
+            content.badge(text.map { Text($0) })
+        } else {
+            content
+        }
+    }
+}
+
+/// The small count (or "Timer done" "!") badge on the room's Artifacts item (before iOS 26: drawn as an overlay).
 struct ForkRailBadge: View {
+    static var usesSystemBadge: Bool {
+        if #available(iOS 26, *) { return true }
+        return false
+    }
+
     let text: String?
 
     var body: some View {
@@ -518,5 +569,29 @@ struct ForkRailBadge: View {
                 .offset(x: 8, y: -7)
                 .accessibilityHidden(true)
         }
+    }
+}
+
+/// An SF Symbol with a red count capsule drawn into the same image (original rendering), for bars that drop overlays.
+enum ForkBadgedSymbol {
+    static func image(symbol: String, badge: String, color: UIColor) -> UIImage {
+        let configuration = UIImage.SymbolConfiguration(pointSize: 19, weight: .regular)
+        guard let base = UIImage(systemName: symbol, withConfiguration: configuration)?.withTintColor(color, renderingMode: .alwaysOriginal) else {
+            return UIImage()
+        }
+        let font = UIFont.systemFont(ofSize: 10, weight: .bold)
+        let text = NSAttributedString(string: badge, attributes: [.font: font, .foregroundColor: UIColor.white])
+        let textSize = text.size()
+        let badgeSize = CGSize(width: max(15, textSize.width + 8), height: 15)
+        let inset = CGPoint(x: badgeSize.width * 0.55, y: 7)
+        let size = CGSize(width: base.size.width + inset.x, height: base.size.height + inset.y)
+        let image = UIGraphicsImageRenderer(size: size).image { _ in
+            base.draw(at: CGPoint(x: 0, y: inset.y))
+            let rect = CGRect(x: size.width - badgeSize.width, y: 0, width: badgeSize.width, height: badgeSize.height)
+            UIColor.systemRed.setFill()
+            UIBezierPath(roundedRect: rect, cornerRadius: badgeSize.height / 2).fill()
+            text.draw(at: CGPoint(x: rect.midX - textSize.width / 2, y: rect.midY - textSize.height / 2))
+        }
+        return image.withRenderingMode(.alwaysOriginal)
     }
 }

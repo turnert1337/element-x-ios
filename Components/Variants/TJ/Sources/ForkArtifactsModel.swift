@@ -158,6 +158,8 @@ final class ForkArtifactsModel {
     private(set) var isFetching = false
     private(set) var fetchError: String?
     private(set) var sessionExpired = false
+    /// The last index fetch's REST failure (nil after a success, or for a non-REST error); the Home Screen app maps it (§13.2).
+    private(set) var fetchFailure: ForkMatrixREST.RESTError?
 
     // Zone
     var selectedAID: String? {
@@ -303,17 +305,25 @@ final class ForkArtifactsModel {
             cache.saveIndex(relevant)
             apply(entries: ForkArtifactIndex.parse(stateEvents: relevant))
             fetchError = nil
+            fetchFailure = nil
+            hasFetchedOnce = true
+            ForkKnownArtifacts.record(roomID: roomID, entries: entries.map { ($0.aid, $0.title, $0.icon) })
+        } catch let error as ForkMatrixREST.RESTError where error != .sessionExpired && error != .noSession {
+            fetchFailure = error
+            fetchError = "Can't reach artifacts right now"
             hasFetchedOnce = true
         } catch ForkMatrixREST.RESTError.sessionExpired {
+            fetchFailure = .sessionExpired
             sessionExpired = true
             fetchError = "Session expired: reopen TJ Element"
             pollTask?.cancel()
             pollTask = nil
         } catch ForkMatrixREST.RESTError.noSession {
+            fetchFailure = .noSession
             fetchError = "Can't reach artifacts (signed-in session not found)"
             hasFetchedOnce = true
         } catch {
-            if !(error is CancellationError) {
+            if !ForkDevLogProblem.isCancellation(error) {
                 fetchError = "Can't reach artifacts right now"
                 hasFetchedOnce = true
             }
