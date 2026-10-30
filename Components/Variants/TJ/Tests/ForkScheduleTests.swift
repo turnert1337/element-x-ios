@@ -185,6 +185,42 @@ struct ForkScheduleDraftTests {
 
 // MARK: - S3 · room snapshot: trust (B2.5), availability (B6), status + kill (B2.2, B2.3)
 
+/// Build 5 E2E F2: the iOS 26+ toolbar drops `.opacity` and `.accessibilityValue` on a bar item, so the not-ready look lives
+/// in what the bar does keep: the icon image's own colour and the item's label.
+struct ForkScheduleRailLookTests {
+    @Test
+    func notReadyRoomsAreDimmedAndSayWhyInTheLabel() {
+        let cases: [(ForkScheduleRoom.Availability, String)] = [
+            (.encrypted, "Schedule. Schedules need an unencrypted room."),
+            (.noWorkshop, "Schedule. The workshop isn't in this chat."),
+            (.notSetUp, "Schedule. This chat isn't set up for schedules yet. Ask the workshop to set it up.")
+        ]
+        for (availability, label) in cases {
+            let look = ForkScheduleRailLook(availability: availability, enabledCount: 0)
+            #expect(look.isDimmed)
+            #expect(look.accessibilityLabel == label)
+            #expect(look.badge == nil)
+        }
+    }
+
+    @Test
+    func readyRoomIsPlainWithTheCountBadge() {
+        let look = ForkScheduleRailLook(availability: .ready, enabledCount: 2)
+        #expect(!look.isDimmed)
+        #expect(look.accessibilityLabel == "Schedule")
+        #expect(look.badge == "2")
+        #expect(ForkScheduleRailLook(availability: .ready, enabledCount: 0).badge == nil)
+    }
+
+    @Test
+    func beforeTheFirstStateReadTheItemIsNotDimmed() {
+        let look = ForkScheduleRailLook(availability: nil, enabledCount: 0)
+        #expect(!look.isDimmed)
+        #expect(look.accessibilityLabel == "Schedule")
+        #expect(look.badge == nil)
+    }
+}
+
 struct ForkScheduleRoomTests {
     static let op = ForkScheduleConstants.operatorID
     static let bot = ForkScheduleConstants.workshopBotID

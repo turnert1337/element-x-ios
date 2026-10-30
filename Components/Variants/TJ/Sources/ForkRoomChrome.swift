@@ -414,7 +414,7 @@ struct ForkRoomChromeView: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { state.detailWidth = $0 }
-        .toolbar { ForkRoomToolbar(coordinator: coordinator, model: model, schedules: coordinator.schedules, collapseDevLog: collapseDevLog, hasVerticalBar: state.hasVerticalBar, colorScheme: colorScheme).content }
+        .toolbar { ForkRoomToolbar(coordinator: coordinator, model: model, schedules: coordinator.schedules, layout: barLayout, hasVerticalBar: state.hasVerticalBar, colorScheme: colorScheme).content }
         .background {
             ForkWindowMetricsReader { size, scene in coordinator.windowChanged(size: size, scene: scene) }
                 .frame(width: 0, height: 0)
@@ -426,9 +426,33 @@ struct ForkRoomChromeView: View {
         .onChange(of: coordinator.splitColumnVisibility) { _, newValue in coordinator.columnVisibilityChanged(newValue) }
     }
 
-    /// §5.2: Dev log alone folds into "More" in a compact horizontal bar (27.1: only when there's no vertical bar).
-    private var collapseDevLog: Bool {
-        sizeClass == .compact && !state.hasVerticalBar
+    private var barLayout: ForkRoomBarLayout {
+        ForkRoomBarLayout(isCompact: sizeClass == .compact, hasVerticalBar: state.hasVerticalBar)
+    }
+}
+
+/// Which room bar items sit top level and which fold into "More". §5.2 folded Dev log alone; build 5 (F1) folds New chat
+/// too in a compact horizontal bar, because a 5th trailing item pushed upstream's room-name header (the way into room
+/// details) off an iPhone portrait bar. Artifacts and Schedule always stay top level (B6: "just like an artifact button").
+struct ForkRoomBarLayout: Equatable {
+    enum Item: Hashable {
+        case artifacts
+        case schedule
+        case newChat
+        case devLog
+    }
+
+    let topLevel: [Item]
+    let more: [Item]
+
+    init(isCompact: Bool, hasVerticalBar: Bool) {
+        if isCompact, !hasVerticalBar {
+            topLevel = [.artifacts, .schedule]
+            more = [.newChat, .devLog]
+        } else {
+            topLevel = [.artifacts, .schedule, .newChat, .devLog]
+            more = []
+        }
     }
 }
 
@@ -466,7 +490,7 @@ struct ForkRoomToolbar {
     let coordinator: ForkRoomChromeCoordinator
     let model: ForkArtifactsModel
     let schedules: ForkScheduleModel
-    let collapseDevLog: Bool
+    let layout: ForkRoomBarLayout
     /// iOS 27.1 vertical bar (closed Duo): there the overlay badge draws and the system `.badge` does not (G-H6).
     let hasVerticalBar: Bool
     var colorScheme: ColorScheme = .light
@@ -485,8 +509,12 @@ struct ForkRoomToolbar {
         if #available(iOS 27.1, *) {
             ToolbarItem(placement: .primaryAction) { artifactsButton }.visibilityPriority(.high)
             ToolbarItem(placement: .primaryAction) { scheduleButton }.visibilityPriority(.high)
-            ToolbarItem(placement: .primaryAction) { newChatButton }.visibilityPriority(.high)
-            ToolbarItem(placement: .primaryAction) { devLogItem }.visibilityPriority(.low)
+            if layout.more.isEmpty {
+                ToolbarItem(placement: .primaryAction) { newChatButton }.visibilityPriority(.high)
+                ToolbarItem(placement: .primaryAction) { devLogButton }.visibilityPriority(.low)
+            } else {
+                ToolbarItem(placement: .primaryAction) { moreMenu }.visibilityPriority(.low)
+            }
         } else {
             plainItems
         }
@@ -499,8 +527,12 @@ struct ForkRoomToolbar {
     private var plainItems: some ToolbarContent {
         ToolbarItem(placement: .primaryAction) { artifactsButton }
         ToolbarItem(placement: .primaryAction) { scheduleButton }
-        ToolbarItem(placement: .primaryAction) { newChatButton }
-        ToolbarItem(placement: .primaryAction) { devLogItem }
+        if layout.more.isEmpty {
+            ToolbarItem(placement: .primaryAction) { newChatButton }
+            ToolbarItem(placement: .primaryAction) { devLogButton }
+        } else {
+            ToolbarItem(placement: .primaryAction) { moreMenu }
+        }
     }
 
     private var artifactsButton: some View {
@@ -529,28 +561,27 @@ struct ForkRoomToolbar {
         .accessibilityIdentifier("tj_room-artifacts")
     }
 
-    /// B6: badge = enabled trusted schedules; dimmed (the sheet says why) when the room isn't ready.
+    /// B6: badge = enabled trusted schedules; dimmed (the sheet says why) when the room isn't ready. The bar drops `.opacity`
+    /// and `.accessibilityValue` (build 5 F2), so the dim is drawn into the image and the reason rides in the label.
     private var scheduleButton: some View {
-        let count = schedules.badgeCount
-        let badge = count > 0 ? "\(count)" : nil
-        let reason = schedules.room?.availability.message
+        let look = schedules.railLook
         let symbol = "calendar.badge.clock"
         return Button {
             coordinator.presentSchedules()
         } label: {
             Label {
-                Text("Schedule")
+                Text(look.accessibilityLabel)
             } icon: {
-                if usesSystemBadge || badge == nil {
+                if look.isDimmed {
+                    Image(uiImage: ForkBadgedSymbol.plain(symbol: symbol, color: symbolColor.withAlphaComponent(0.35)))
+                } else if usesSystemBadge || look.badge == nil {
                     Image(systemName: symbol)
                 } else {
-                    Image(uiImage: ForkBadgedSymbol.image(symbol: symbol, badge: badge ?? "", color: symbolColor))
+                    Image(uiImage: ForkBadgedSymbol.image(symbol: symbol, badge: look.badge ?? "", color: symbolColor))
                 }
             }
-            .opacity(reason == nil ? 1 : 0.45)
         }
-        .modifier(ForkToolbarBadge(text: badge, enabled: usesSystemBadge))
-        .accessibilityValue(reason ?? (count > 0 ? "\(count) schedules" : ""))
+        .modifier(ForkToolbarBadge(text: look.badge, enabled: usesSystemBadge))
         .accessibilityIdentifier("tj_room-schedule")
     }
 
@@ -563,18 +594,19 @@ struct ForkRoomToolbar {
         .accessibilityIdentifier("tj_room-new-chat")
     }
 
-    @ViewBuilder
-    private var devLogItem: some View {
-        if collapseDevLog {
-            Menu {
-                devLogButton
-            } label: {
-                Label("More", systemImage: "ellipsis.circle")
+    private var moreMenu: some View {
+        Menu {
+            ForEach(layout.more, id: \.self) { item in
+                switch item {
+                case .newChat: newChatButton
+                case .devLog: devLogButton
+                case .artifacts, .schedule: EmptyView()
+                }
             }
-            .accessibilityIdentifier("tj_room-more")
-        } else {
-            devLogButton
+        } label: {
+            Label("More", systemImage: "ellipsis.circle")
         }
+        .accessibilityIdentifier("tj_room-more")
     }
 
     private var devLogButton: some View {
@@ -628,11 +660,15 @@ struct ForkRailBadge: View {
 
 /// An SF Symbol with a red count capsule drawn into the same image (original rendering), for bars that drop overlays.
 enum ForkBadgedSymbol {
-    static func image(symbol: String, badge: String, color: UIColor) -> UIImage {
+    /// The symbol alone in one fixed colour (original rendering), e.g. the Schedule item's dimmed not-ready look.
+    static func plain(symbol: String, color: UIColor) -> UIImage {
         let configuration = UIImage.SymbolConfiguration(pointSize: 19, weight: .regular)
-        guard let base = UIImage(systemName: symbol, withConfiguration: configuration)?.withTintColor(color, renderingMode: .alwaysOriginal) else {
-            return UIImage()
-        }
+        return UIImage(systemName: symbol, withConfiguration: configuration)?.withTintColor(color, renderingMode: .alwaysOriginal) ?? UIImage()
+    }
+
+    static func image(symbol: String, badge: String, color: UIColor) -> UIImage {
+        let base = plain(symbol: symbol, color: color)
+        guard base.size != .zero else { return UIImage() }
         let font = UIFont.systemFont(ofSize: 10, weight: .bold)
         let text = NSAttributedString(string: badge, attributes: [.font: font, .foregroundColor: UIColor.white])
         let textSize = text.size()

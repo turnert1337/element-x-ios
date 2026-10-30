@@ -34,8 +34,8 @@ final class ForkScheduleModel {
         userID == ForkScheduleConstants.operatorID
     }
 
-    var badgeCount: Int {
-        room?.availability == .ready ? room?.enabledCount ?? 0 : 0
+    var railLook: ForkScheduleRailLook {
+        ForkScheduleRailLook(availability: room?.availability, enabledCount: room?.enabledCount ?? 0)
     }
 
     /// Fast while a save waits for the relay's confirmation, slow otherwise.

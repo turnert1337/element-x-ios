@@ -64,6 +64,26 @@ struct ForkRoomChromeTests {
         #expect(chrome.model.layoutMode == .chatOnly)
         #expect(!chrome.model.isOpen)
     }
+
+    /// Build 5 E2E F1: in iPhone portrait (compact, horizontal bar) the 5th trailing item pushed upstream's room-name header
+    /// off the bar. Artifacts + Schedule stay top level (the operator's "just like an artifact button"); New chat joins Dev log
+    /// under More, so the bar holds as many items as build 4, where the room name showed.
+    @Test
+    func compactHorizontalBarKeepsArtifactsAndScheduleAndFoldsNewChatIntoMore() {
+        let layout = ForkRoomBarLayout(isCompact: true, hasVerticalBar: false)
+        #expect(layout.topLevel == [.artifacts, .schedule])
+        #expect(layout.more == [.newChat, .devLog])
+    }
+
+    @Test
+    func verticalBarAndRegularWidthShowEveryItemTopLevel() {
+        for layout in [ForkRoomBarLayout(isCompact: true, hasVerticalBar: true),
+                       ForkRoomBarLayout(isCompact: false, hasVerticalBar: false),
+                       ForkRoomBarLayout(isCompact: false, hasVerticalBar: true)] {
+            #expect(layout.topLevel == [.artifacts, .schedule, .newChat, .devLog])
+            #expect(layout.more.isEmpty)
+        }
+    }
 }
 
 struct ForkArtifactsStoreTests {

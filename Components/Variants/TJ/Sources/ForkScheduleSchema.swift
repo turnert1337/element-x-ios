@@ -547,6 +547,24 @@ nonisolated struct ForkScheduleDraft: Equatable, Sendable {
     }
 }
 
+// MARK: - Rail item look (B6)
+
+/// What the room's Schedule bar item shows. The iOS 26+ bar keeps only an item's icon image and label text (it drops
+/// `.opacity` and `.accessibilityValue`), so the not-ready reason rides in the label and the dim is drawn into the icon.
+nonisolated struct ForkScheduleRailLook: Equatable, Sendable {
+    let isDimmed: Bool
+    let accessibilityLabel: String
+    let badge: String?
+
+    /// `availability` is nil until the room's first `/state` read lands.
+    init(availability: ForkScheduleRoom.Availability?, enabledCount: Int) {
+        let reason = availability?.message
+        isDimmed = reason != nil
+        accessibilityLabel = reason.map { "Schedule. \($0)" } ?? "Schedule"
+        badge = availability == .ready && enabledCount > 0 ? "\(enabledCount)" : nil
+    }
+}
+
 // MARK: - Room snapshot (B2.5 trust as the app applies it, B6 availability)
 
 /// One `/state` snapshot of a room, reduced to what the Schedule rail item and sheet show.
